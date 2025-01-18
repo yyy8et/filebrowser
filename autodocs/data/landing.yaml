@@ -1,0 +1,89 @@
+# Note: Template blocks require a 'weight' parameter so they're correctly ordered on the landing page
+
+# Hero
+hero:
+  enable: true
+  weight: 10
+  width: 100%
+  template: hero
+
+
+  badge:
+    text: "v0.4.0"
+    color: success # primary, secondary, success, danger, warning, info, light, dark
+    pill: true # boolean
+    soft: false # boolean
+
+  titleLogo:
+    path: "images/logos"
+    filename: "title_logo.png"
+    alt: "Lotus Docs Logo"
+    height: 80px
+
+  title: "FileBrowser Quantum"
+  subtitle: A modern self-hosted **file manager** for the web. 
+
+  ctaButton:
+    color: success
+    btnText: "Go to the Docs"
+    url: "docs"
+  info: "**Open Source** Apache 2.0 Licensed."
+
+# Image compare
+imageCompare:
+  enable: true
+  weight: 30
+  template: image compare
+
+  title: Beautifully Customizable.
+  subtitle: You can make it your own.
+
+  items:
+    - title: Dark Mode
+      config: {
+        startingPoint: 50,
+        addCircle: true,
+        addCircleBlur: false,
+        showLabels: true,
+        labelOptions: {
+          before: 'Dark',
+          after: 'Light',
+          onHover: false
+        }
+      }
+      imagePath: "images/screenshots"
+      imageBefore: "lotusdocs_dark_v0.8.webp"
+      imageAfter: "lotusdocs_light_v0.8.webp"
+
+    - title: Branding
+      config: {
+        controlColor: "#3C4257",
+        startingPoint: 25,
+        addCircle: true,
+        addCircleBlur: false,
+        showLabels: true,
+        labelOptions: {
+          before: 'Inter',
+          after: 'Life Saver',
+          onHover: false
+        }
+      }
+      imagePath: "images/screenshots"
+      imageBefore: "lotusdocs_google_font_demo_inter_screenshot.webp"
+      imageAfter: "lotusdocs_google_font_demo_lifesavers_screenshot.webp"
+
+    - title: Accent Color
+      config: {
+        startingPoint: 25,
+        addCircle: true,
+        addCircleBlur: true,
+        showLabels: true,
+        labelOptions: {
+          before: 'Blue',
+          after: 'Cardinal',
+          onHover: false
+        }
+      }
+      imagePath: "images/screenshots"
+      imageBefore: "lotusdocs_blue_theme_colour.webp"
+      imageAfter: "lotusdocs_cardinal_theme_colour.webp"
