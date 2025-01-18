@@ -39,3 +39,9 @@ yarn-error.log*
 *.sw*
 bin/
 build/
+
+# docs
+
+/autodocs/public
+/autodocs/themes
+/autodocs/resources
