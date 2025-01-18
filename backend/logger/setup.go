@@ -20,11 +20,14 @@ type Logger struct {
 	colors      bool
 }
 
+var stdOutLoggerExists bool
+
 // NewLogger creates a new Logger instance with separate file and stdout loggers
 func NewLogger(filepath string, levels, apiLevels []LogLevel, noColors bool) (*Logger, error) {
 	var fileWriter io.Writer = io.Discard
+	stdout := filepath == ""
 	// Configure file logging
-	if filepath != "" {
+	if !stdout {
 		file, err := os.OpenFile(filepath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 		if err != nil {
 			return nil, fmt.Errorf("failed to open log file: %v", err)
@@ -39,6 +42,9 @@ func NewLogger(filepath string, levels, apiLevels []LogLevel, noColors bool) (*L
 	if filepath != "" {
 		logger = log.New(fileWriter, "", flags)
 	}
+	if stdout {
+		stdOutLoggerExists = true
+	}
 	return &Logger{
 		logger:      logger,
 		levels:      levels,
@@ -46,7 +52,7 @@ func NewLogger(filepath string, levels, apiLevels []LogLevel, noColors bool) (*L
 		disabled:    slices.Contains(levels, DISABLED),
 		disabledAPI: slices.Contains(apiLevels, DISABLED),
 		colors:      !noColors,
-		stdout:      filepath == "",
+		stdout:      stdout,
 	}, nil
 }
 
@@ -100,7 +106,10 @@ func SetupLogger(output, levels, apiLevels string, noColors bool) error {
 	if outputStdout == "STDOUT" {
 		output = ""
 	}
-
+	if output == "" && stdOutLoggerExists {
+		// stdout logger already exists... don't create another
+		return fmt.Errorf("stdout logger already exists, could not set config levels=[%v] apiLevels=[%v] noColors=[%v]", levels, apiLevels, noColors)
+	}
 	// Create the logger
 	logger, err := NewLogger(output, upperLevels, upperApiLevels, noColors)
 	if err != nil {

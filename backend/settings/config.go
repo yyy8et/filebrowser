@@ -2,6 +2,7 @@ package settings
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -82,7 +83,7 @@ func Initialize(configFile string) {
 			logConfig.NoColors,
 		)
 		if err != nil {
-			logger.Error(fmt.Sprintf("Failed to set up logger: %v", err))
+			log.Println("[ERROR] Failed to set up logger:", err)
 		}
 	}
 }
