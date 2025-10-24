@@ -93,15 +93,18 @@ export default {
     };
   },
   mounted() {
-    mutations.setCurrentUser(null);
-    mutations.setJWT("");
-    document.cookie = "auth=; expires=Thu, 01 Jan 1970 00:00:01 GMT; path=/";
     let redirect = state.route.query.redirect;
     if (redirect) {
       redirect = removeLeadingSlash(redirect);
       redirect = globalVars.baseURL + redirect;
+      this.loginURL += `?redirect=${encodeURIComponent(redirect)}`;
+      // If password auth is disabled and OIDC is available, auto-redirect
+      // Only auto-redirect when there's a valid redirect URL (user needs to go somewhere)
+      if (!globalVars.passwordAvailable && globalVars.oidcAvailable) {
+        window.location.href = this.loginURL;
+        return;
+      }
     }
-    this.loginURL += `?redirect=${encodeURIComponent(redirect)}`;
     if (!globalVars.recaptcha) return;
     window.globalVars.recaptcha.ready(function () {
       window.globalVars.recaptcha.render("globalVars.recaptcha", {
@@ -204,7 +207,6 @@ export default {
           if (!landingPage.startsWith("/")) {
             landingPage = "/" + landingPage;
           }
-          console.log("landingPage:", landingPage);
           // Prevent redirect loop if landing page is the login page
           if (!landingPage.includes("/login")) {
             redirect = landingPage;

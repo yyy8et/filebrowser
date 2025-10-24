@@ -103,7 +103,6 @@ func withHashFileHelper(fn handleFunc) handleFunc {
 		file, err := FileInfoFasterFunc(utils.FileOptions{
 			Path:                     utils.JoinPathAsUnix(link.Path, path),
 			Source:                   link.Source,
-			Modify:                   false,
 			Expand:                   true,
 			Content:                  getContent,
 			ExtractEmbeddedSubtitles: settings.Config.Integrations.Media.ExtractEmbeddedSubtitles && link.ExtractEmbeddedSubtitles,
@@ -115,7 +114,7 @@ func withHashFileHelper(fn handleFunc) handleFunc {
 		file.Token = link.Token
 		file.Source = ""
 		file.Hash = link.Hash
-		if !link.EnableOnlyOffice || !link.DisableFileViewer || reachedDownloadsLimit {
+		if !link.EnableOnlyOffice || link.DisableFileViewer || reachedDownloadsLimit {
 			file.OnlyOfficeId = ""
 		}
 		if getContent && file.Content != "" {
@@ -386,7 +385,7 @@ func withUserHelper(fn handleFunc) handleFunc {
 			return http.StatusUnauthorized, fmt.Errorf("token expired or revoked")
 		}
 		// Check if the token is about to expire and send a header to renew it
-		if tk.Expires < time.Now().Add(time.Hour).Unix() {
+		if tk.Expires < time.Now().Add(time.Minute*30).Unix() {
 			w.Header().Add("X-Renew-Token", "true")
 		} // Retrieve the user from the store and store it in the context
 		data.user, err = store.Users.Get(tk.BelongsTo)

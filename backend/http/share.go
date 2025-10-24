@@ -224,6 +224,9 @@ func sharePostHandler(w http.ResponseWriter, r *http.Request, d *requestContext)
 		body.Path = s.Path
 		body.Source = s.Source
 		s.CommonShare = body.CommonShare
+		if s.ShareType == "upload" && !body.AllowCreate {
+			s.AllowCreate = true
+		}
 
 		// Reset download counts if limit settings changed
 		if shouldResetCounts {
@@ -281,6 +284,9 @@ func sharePostHandler(w http.ResponseWriter, r *http.Request, d *requestContext)
 			return http.StatusForbidden, fmt.Errorf("path not found: %s", body.Path)
 		}
 	}
+	if body.ShareType == "upload" && !body.AllowCreate {
+		body.AllowCreate = true
+	}
 	body.Source = source.Path // backend source is path
 	s = &share.Link{
 		Expire:       expire,
@@ -322,7 +328,7 @@ type DirectDownloadResponse struct {
 // @Failure 400 {object} map[string]string "Bad request - invalid parameters or path is not a file"
 // @Failure 403 {object} map[string]string "Forbidden - access denied"
 // @Failure 500 {object} map[string]string "Internal server error"
-// @Router /public/share/direct [get]
+// @Router /api/share/direct [get]
 func shareDirectDownloadHandler(w http.ResponseWriter, r *http.Request, d *requestContext) (int, error) {
 	// Extract query parameters
 	encodedPath := r.URL.Query().Get("path")

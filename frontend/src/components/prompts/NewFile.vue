@@ -22,11 +22,11 @@
 </template>
 <script>
 import { state } from "@/store";
-import { filesApi } from "@/api";
+import { filesApi, publicApi } from "@/api";
 import { getters, mutations } from "@/store"; // Import your custom store
 import { notify } from "@/notify";
 import { url } from "@/utils";
-
+import { shareInfo } from "@/utils/constants";
 export default {
   name: "new-file",
   data() {
@@ -58,8 +58,14 @@ export default {
 
     async createFile(overwrite = false) {
       try {
+        if (getters.isShare()) {
+          await publicApi.post(shareInfo.hash, url.joinPath(state.req.path, this.name), "", overwrite);
+          url.goToItem(state.req.source, url.joinPath(state.req.path, this.name), {});
+          mutations.closeHovers();
+          return;
+        }
         await filesApi.post(state.req.source, url.joinPath(state.req.path, this.name), "", overwrite);
-        url.goToItem(state.req.source, url.joinPath(state.req.path, this.name));
+        url.goToItem(state.req.source, url.joinPath(state.req.path, this.name), {});
         mutations.closeHovers();
       } catch (error) {
         if (error.message === "conflict") {
@@ -79,8 +85,15 @@ export default {
                   for (let counter = 1; counter <= maxAttempts && !success; counter++) {
                     try {
                       const newName = counter === 1 ? `${originalName} (1)` : `${originalName} (${counter})`;
+                      if (getters.isShare()) {
+                        await publicApi.post(shareInfo.hash, url.joinPath(state.req.path, newName), "", false);
+                        url.goToItem(state.req.source, url.joinPath(state.req.path, newName), {});
+                        mutations.closeHovers();
+                        success = true;
+                        return;
+                      }
                       await filesApi.post(state.req.source, url.joinPath(state.req.path, newName), "", false);
-                      url.goToItem(state.req.source, url.joinPath(state.req.path, newName));
+                      url.goToItem(state.req.source, url.joinPath(state.req.path, newName), {});
                       mutations.closeHovers();
                       success = true;
                     } catch (renameError) {

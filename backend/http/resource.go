@@ -87,13 +87,9 @@ func resourceGetHandler(w http.ResponseWriter, r *http.Request, d *requestContex
 	userscope = strings.TrimRight(userscope, "/")
 	scopePath := utils.JoinPathAsUnix(userscope, path)
 	getContent := r.URL.Query().Get("content") == "true"
-	if d.share != nil && d.share.DisableFileViewer {
-		getContent = false
-	}
 	fileInfo, err := files.FileInfoFaster(utils.FileOptions{
 		Username:                 d.user.Username,
 		Path:                     scopePath,
-		Modify:                   d.user.Permissions.Modify,
 		Source:                   source,
 		Expand:                   true,
 		Content:                  getContent,
@@ -101,6 +97,9 @@ func resourceGetHandler(w http.ResponseWriter, r *http.Request, d *requestContex
 	}, store.Access)
 	if err != nil {
 		return errToStatus(err), err
+	}
+	if !d.user.Permissions.Download && fileInfo.Content != "" {
+		return http.StatusForbidden, fmt.Errorf("user is not allowed to get content, requires download permission")
 	}
 	if userscope != "/" {
 		fileInfo.Path = strings.TrimPrefix(fileInfo.Path, userscope)
@@ -123,6 +122,7 @@ func resourceGetHandler(w http.ResponseWriter, r *http.Request, d *requestContex
 		} else if err != nil {
 			return http.StatusInternalServerError, err
 		}
+		fileInfo.Checksums = make(map[string]string)
 		fileInfo.Checksums[algo] = checksum
 	}
 	return renderJSON(w, r, fileInfo)
@@ -143,6 +143,11 @@ func resourceGetHandler(w http.ResponseWriter, r *http.Request, d *requestContex
 // @Failure 500 {object} map[string]string "Internal server error"
 // @Router /api/resources [delete]
 func resourceDeleteHandler(w http.ResponseWriter, r *http.Request, d *requestContext) (int, error) {
+
+	if !d.user.Permissions.Delete {
+		return http.StatusForbidden, fmt.Errorf("user is not allowed to delete")
+	}
+
 	// TODO source := r.URL.Query().Get("source")
 	encodedPath := r.URL.Query().Get("path")
 	source := r.URL.Query().Get("source")
@@ -169,7 +174,6 @@ func resourceDeleteHandler(w http.ResponseWriter, r *http.Request, d *requestCon
 		Username: d.user.Username,
 		Path:     utils.JoinPathAsUnix(userscope, path),
 		Source:   source,
-		Modify:   d.user.Permissions.Modify,
 		Expand:   false,
 	}, store.Access)
 	if err != nil {
@@ -204,45 +208,45 @@ func resourceDeleteHandler(w http.ResponseWriter, r *http.Request, d *requestCon
 // @Router /api/resources [post]
 func resourcePostHandler(w http.ResponseWriter, r *http.Request, d *requestContext) (int, error) {
 	path := r.URL.Query().Get("path")
+	unescapedPath := path
 	source := r.URL.Query().Get("source")
 	var err error
-	// decode url encoded source name
-	source, err = url.QueryUnescape(source)
-	if err != nil {
-		logger.Debugf("invalid source encoding: %v", err)
-		return http.StatusBadRequest, fmt.Errorf("invalid source encoding: %v", err)
-	}
-	path, err = url.QueryUnescape(path)
-	if err != nil {
-		logger.Debugf("invalid path encoding: %v", err)
-		return http.StatusBadRequest, fmt.Errorf("invalid path encoding: %v", err)
-	}
-	shareUpload := false
+	accessStore := store.Access
+	// if share is not nil, then set accessStore to nil
 	if d.share != nil {
-		if d.share.ShareType == "upload" {
-			shareUpload = true
+		accessStore = nil
+	} else {
+		// decode url encoded source name
+		source, err = url.QueryUnescape(source)
+		if err != nil {
+			logger.Debugf("invalid source encoding: %v", err)
+			return http.StatusBadRequest, fmt.Errorf("invalid source encoding: %v", err)
 		}
-	}
-	if !d.user.Permissions.Modify && !shareUpload {
-		logger.Debugf("user is not allowed to create or modify")
-		return http.StatusForbidden, fmt.Errorf("user is not allowed to create or modify")
+		unescapedPath, err = url.QueryUnescape(path)
+		if err != nil {
+			logger.Debugf("invalid path encoding: %v", err)
+			return http.StatusBadRequest, fmt.Errorf("invalid path encoding: %v", err)
+		}
+		if !d.user.Permissions.Create {
+			return http.StatusForbidden, fmt.Errorf("user is not allowed to create or modify")
+		}
+		userscope := ""
+		// Determine if this is a directory or file based on trailing slash
+		// Strip trailing slash from userscope to prevent double slashes
+		userscope, err = settings.GetScopeFromSourceName(d.user.Scopes, source)
+		if err != nil {
+			logger.Debugf("error getting scope from source name: %v", err)
+			return http.StatusForbidden, err
+		}
+		userscope = strings.TrimRight(userscope, "/")
+		path = utils.JoinPathAsUnix(userscope, unescapedPath)
 	}
 
-	// Determine if this is a directory or file based on trailing slash
-	isDir := strings.HasSuffix(path, "/")
-	// Strip trailing slash from userscope to prevent double slashes
-	userscope, err := settings.GetScopeFromSourceName(d.user.Scopes, source)
-	if err != nil {
-		logger.Debugf("error getting scope from source name: %v", err)
-		return http.StatusForbidden, err
-	}
-	userscope = strings.TrimRight(userscope, "/")
-
+	isDir := strings.HasSuffix(unescapedPath, "/")
 	fileOpts := utils.FileOptions{
 		Username: d.user.Username,
-		Path:     utils.JoinPathAsUnix(userscope, path),
+		Path:     path,
 		Source:   source,
-		Modify:   d.user.Permissions.Modify,
 		Expand:   false,
 	}
 	idx := indexing.GetIndex(source)
@@ -250,10 +254,10 @@ func resourcePostHandler(w http.ResponseWriter, r *http.Request, d *requestConte
 		logger.Debugf("source %s not found", source)
 		return http.StatusNotFound, fmt.Errorf("source %s not found", source)
 	}
-	realPath, _, _ := idx.GetRealPath(userscope, path)
+	realPath, _, _ := idx.GetRealPath(path)
 
 	// Check access control for the target path
-	if store.Access != nil && !store.Access.Permitted(idx.Path, path, d.user.Username) {
+	if accessStore != nil && !accessStore.Permitted(idx.Path, path, d.user.Username) {
 		return http.StatusForbidden, fmt.Errorf("access denied to path %s", path)
 	}
 
@@ -265,6 +269,7 @@ func resourcePostHandler(w http.ResponseWriter, r *http.Request, d *requestConte
 
 		// If type mismatch (file vs folder or folder vs file) and not overriding
 		if existingIsDir != requestingDir && r.URL.Query().Get("override") != "true" {
+			logger.Debugf("Type conflict detected in chunked: existing is dir=%v, requesting dir=%v at path=%v", existingIsDir, requestingDir, realPath)
 			return http.StatusConflict, nil
 		}
 	}
@@ -311,11 +316,10 @@ func resourcePostHandler(w http.ResponseWriter, r *http.Request, d *requestConte
 			}
 
 			var fileInfo *iteminfo.ExtendedFileInfo
-			fileInfo, err = files.FileInfoFaster(fileOpts, store.Access)
+			fileInfo, err = files.FileInfoFaster(fileOpts, accessStore)
 			if err == nil { // File exists
 				if r.URL.Query().Get("override") != "true" {
 					logger.Debugf("resource already exists: %v", fileInfo.RealPath)
-					logger.Debugf("Resource already exists: %v", fileInfo.RealPath)
 					return http.StatusConflict, nil
 				}
 				// If overriding, delete existing thumbnails
@@ -373,30 +377,14 @@ func resourcePostHandler(w http.ResponseWriter, r *http.Request, d *requestConte
 		return http.StatusOK, nil
 	}
 
-	// Check for file/folder conflicts for non-chunked uploads
-	if stat, statErr := os.Stat(realPath); statErr == nil {
-		existingIsDir := stat.IsDir()
-		requestingDir := false // Files are never directories
-
-		// If type mismatch (existing dir vs requesting file) and not overriding
-		if existingIsDir != requestingDir && r.URL.Query().Get("override") != "true" {
-			return http.StatusConflict, nil
-		}
-	}
-
-	fileInfo, err := files.FileInfoFaster(fileOpts, store.Access)
-	if err == nil {
-		if r.URL.Query().Get("override") != "true" {
-			return http.StatusConflict, nil
-		}
-
+	fileInfo, err := files.FileInfoFaster(fileOpts, accessStore)
+	if err != nil {
 		preview.DelThumbs(r.Context(), *fileInfo)
 	}
 	err = files.WriteFile(fileOpts, r.Body)
 	if err != nil {
 		logger.Debugf("error writing file: %v", err)
 		return errToStatus(err), err
-
 	}
 	return http.StatusOK, nil
 }
@@ -423,9 +411,7 @@ func resourcePutHandler(w http.ResponseWriter, r *http.Request, d *requestContex
 	if err != nil {
 		return http.StatusBadRequest, fmt.Errorf("invalid source encoding: %v", err)
 	}
-	if !d.user.Permissions.Modify {
-		return http.StatusForbidden, fmt.Errorf("user is not allowed to create or modify")
-	}
+
 	encodedPath := r.URL.Query().Get("path")
 
 	// Decode the URL-encoded path
@@ -448,7 +434,6 @@ func resourcePutHandler(w http.ResponseWriter, r *http.Request, d *requestContex
 		Username: d.user.Username,
 		Path:     utils.JoinPathAsUnix(userscope, path),
 		Source:   source,
-		Modify:   d.user.Permissions.Modify,
 		Expand:   false,
 	}
 
@@ -485,7 +470,7 @@ func resourcePutHandler(w http.ResponseWriter, r *http.Request, d *requestContex
 // @Router /api/resources [patch]
 func resourcePatchHandler(w http.ResponseWriter, r *http.Request, d *requestContext) (int, error) {
 	action := r.URL.Query().Get("action")
-	if !d.user.Permissions.Modify {
+	if !d.user.Permissions.Modify && d.share == nil {
 		return http.StatusForbidden, fmt.Errorf("user is not allowed to create or modify")
 	}
 
@@ -536,7 +521,7 @@ func resourcePatchHandler(w http.ResponseWriter, r *http.Request, d *requestCont
 		return http.StatusNotFound, fmt.Errorf("source %s not found", dstIndex)
 	}
 	// check target dir exists
-	parentDir, isDstDir, err := idx.GetRealPath(userscopeDst, filepath.Dir(dst))
+	parentDir, _, err := idx.GetRealPath(userscopeDst, filepath.Dir(dst))
 	if err != nil {
 		logger.Debugf("Could not get real path for parent dir: %v %v %v", userscopeDst, filepath.Dir(dst), err)
 		return http.StatusNotFound, err
@@ -564,14 +549,9 @@ func resourcePatchHandler(w http.ResponseWriter, r *http.Request, d *requestCont
 			return http.StatusForbidden, fmt.Errorf("access denied to destination path %s", dst)
 		}
 	}
-	overwrite := r.URL.Query().Get("overwrite") == "true"
 	rename := r.URL.Query().Get("rename") == "true"
 	if rename {
 		realDest = addVersionSuffix(realDest)
-	}
-	// Permission for overwriting the file
-	if overwrite && !d.user.Permissions.Modify {
-		return http.StatusForbidden, fmt.Errorf("forbidden: user does not have permission to overwrite file")
 	}
 
 	// Validate move/rename operation to prevent circular references
@@ -589,7 +569,6 @@ func resourcePatchHandler(w http.ResponseWriter, r *http.Request, d *requestCont
 		dst:      realDest,
 		d:        d,
 		isSrcDir: isSrcDir,
-		isDstDir: isDstDir,
 	})
 	if err != nil {
 		logger.Debugf("Could not run patch action. src=%v dst=%v err=%v", realSrc, realDest, err)
@@ -621,13 +600,12 @@ type patchActionParams struct {
 	dst      string
 	d        *requestContext
 	isSrcDir bool
-	isDstDir bool
 }
 
 func patchAction(ctx context.Context, params patchActionParams) error {
 	switch params.action {
 	case "copy":
-		err := files.CopyResource(params.isSrcDir, params.isDstDir, params.srcIndex, params.dstIndex, params.src, params.dst)
+		err := files.CopyResource(params.isSrcDir, params.srcIndex, params.dstIndex, params.src, params.dst)
 		return err
 	case "rename", "move":
 		idx := indexing.GetIndex(params.srcIndex)
@@ -640,7 +618,6 @@ func patchAction(ctx context.Context, params patchActionParams) error {
 			Path:     srcPath,
 			Source:   params.srcIndex,
 			IsDir:    params.isSrcDir,
-			Modify:   params.d.user.Permissions.Modify,
 		}, store.Access)
 
 		if err != nil {
@@ -649,7 +626,7 @@ func patchAction(ctx context.Context, params patchActionParams) error {
 
 		// delete thumbnails
 		preview.DelThumbs(ctx, *fileInfo)
-		return files.MoveResource(params.isSrcDir, params.isDstDir, params.srcIndex, params.dstIndex, params.src, params.dst, store.Share)
+		return files.MoveResource(params.isSrcDir, params.srcIndex, params.dstIndex, params.src, params.dst, store.Share)
 	default:
 		return fmt.Errorf("unsupported action %s: %w", params.action, errors.ErrInvalidRequestParams)
 	}

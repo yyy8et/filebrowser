@@ -46,9 +46,14 @@
           'add-padding': isStickySidebar,
           [listingViewMode]: true,
           dropping: isDragging,
+          'rectangle-selecting': isRectangleSelecting
         }"
         class="file-icons"
       >
+        <!-- Rectangle selection overlay -->
+        <div class="selection-rectangle"
+          :style="rectangleStyle"
+        ></div>
         <div>
           <div class="header card" :class="{ 'dark-mode-item-header': isDarkMode }">
             <p
@@ -114,7 +119,6 @@
             v-bind:path="item.path"
             v-bind:reducedOpacity="item.hidden || isDragging"
             v-bind:hash="shareInfo.hash"
-            :readOnly="isShare ? true : undefined"
             v-bind:hasPreview="item.hasPreview"
           />
         </div>
@@ -169,7 +173,6 @@
 <script>
 import downloadFiles from "@/utils/download";
 import { filesApi } from "@/api";
-import { notify } from "@/notify";
 import { router } from "@/router";
 import * as upload from "@/utils/upload";
 import throttle from "@/utils/throttle";
@@ -194,6 +197,11 @@ export default {
       lastSelected: {}, // Add this to track the currently focused item
       contextTimeout: null, // added for safari context menu
       ctrKeyPressed: false,
+      clipboard: { items: [] }, // Initialize clipboard to prevent errors
+      isRectangleSelecting: false,
+      rectangleStart: { x: 0, y: 0 },
+      rectangleEnd: { x: 0, y: 0 },
+      rectangleSelection: [],
     };
   },
   watch: {
@@ -361,6 +369,19 @@ export default {
     loading() {
       return getters.isLoading();
     },
+    rectangleStyle() {
+      if (!this.isRectangleSelecting) return { display: 'none' };
+      const left = Math.min(this.rectangleStart.x, this.rectangleEnd.x);
+      const top = Math.min(this.rectangleStart.y, this.rectangleEnd.y);
+      const width = Math.abs(this.rectangleStart.x - this.rectangleEnd.x);
+      const height = Math.abs(this.rectangleStart.y - this.rectangleEnd.y);
+      return {
+        left: left + 'px',
+        top: top + 'px',
+        width: width + 'px',
+        height: height + 'px',
+      };
+    },
   },
   mounted() {
     mutations.setSearch(false);
@@ -390,10 +411,15 @@ export default {
     }
 
     // if safari , make sure click and hold opens context menu, but not for any other browser
-    if (!state.user.permissions?.modify) return;
-    this.$el.addEventListener("dragenter", this.dragEnter);
-    this.$el.addEventListener("dragleave", this.dragLeave);
-    this.$el.addEventListener("drop", this.drop);
+    if (state.user.permissions?.modify || shareInfo.allowCreate) {
+      this.$el.addEventListener("dragenter", this.dragEnter);
+      this.$el.addEventListener("dragleave", this.dragLeave);
+      this.$el.addEventListener("drop", this.drop);
+      this.$el.addEventListener('mousedown', this.startRectangleSelection);
+      document.addEventListener('mousemove', this.updateRectangleSelection);
+      document.addEventListener('mouseup', this.endRectangleSelection);
+    }
+
   },
   beforeUnmount() {
     // Remove event listeners before destroying this page.
@@ -415,10 +441,13 @@ export default {
     }
 
     // Also clean up drag/drop listeners on the component's root element
-    if (state.user && state.user?.permissions?.modify) {
+    if (state.user && state.user?.permissions?.modify || shareInfo.allowCreate) {
       this.$el.removeEventListener("dragenter", this.dragEnter);
       this.$el.removeEventListener("dragleave", this.dragLeave);
       this.$el.removeEventListener("drop", this.drop);
+      this.$el.removeEventListener('mousedown', this.startRectangleSelection);
+      document.removeEventListener('mousemove', this.updateRectangleSelection);
+      document.removeEventListener('mouseup', this.endRectangleSelection);
     }
   },
   methods: {
@@ -640,20 +669,20 @@ export default {
           case "c":
           case "x":
             this.copyCut(event, charKey);
-            break;
+            return;
           case "v":
             this.paste(event);
-            break;
+            return;
           case "a":
             event.preventDefault();
             this.selectAll();
-            break;
+            return;
           case "d":
             event.preventDefault();
             downloadFiles(state.selected);
-            break;
+            return;
         }
-        return;
+        // Don't return here - allow other modifier key combinations to propagate
       }
 
       // Handle key events using a switch statement
@@ -774,7 +803,7 @@ export default {
 
       let items = state.selected.map((i) => ({
         from: state.req.items[i].path,
-        fromSource: state.req.items[i].source,
+        fromSource: state.req.source,
         name: state.req.items[i].name,
       }));
 
@@ -793,60 +822,74 @@ export default {
         return;
       }
 
+      if (!this.clipboard || !this.clipboard.items || this.clipboard.items.length === 0) {
+        return;
+      }
+
+      // Construct destination path properly (without URL prefix)
+      const destPath = state.req.path.endsWith('/') ? state.req.path : state.req.path + '/';
+
       let items = this.clipboard.items.map((item) => ({
         from: item.from,
         fromSource: item.fromSource,
-        to: state.route.path + item.name,
-        toSource: item.toSource
+        to: destPath + item.name,
+        toSource: state.req.source
       }));
 
-      if (items.length === 0) {
-        return;
-      }
-      mutations.setLoading("listing", true);
-      if (getters.isShare()) {
-        // Shared files don't support move/copy operations
-        mutations.setLoading("listing", false);
-        notify.showError("Move/copy operations are not supported for shared files.");
-        return;
-      }
+      const operation = this.clipboard.key === "x" ? "move" : "copy";
 
-      let action = async (overwrite, rename) => {
-        await filesApi.moveCopy(items, "copy", overwrite, rename);
-        mutations.setLoading("listing", false);
-      };
+      // Show confirmation prompt first
+      mutations.showHover({
+        name: "CopyPasteConfirm",
+        props: {
+          operation: operation,
+          items: items,
+          onConfirm: async () => {
+            mutations.setLoading("listing", true);
 
-      if (this.clipboard.key === "x") {
-        action = async (overwrite, rename) => {
-          await filesApi.moveCopy(items, "move", overwrite, rename);
-          this.clipboard = {};
-          mutations.setLoading("listing", false);
-        };
-      }
+            let action = async (overwrite, rename) => {
+              try {
+              if (getters.isShare()) {
+                await publicApi.moveCopy(items, operation, overwrite, rename);
+                } else {
+                  await filesApi.moveCopy(items, operation, overwrite, rename);
+                }
+                if (operation === "move") {
+                  this.clipboard = { items: [] };
+                }
+                mutations.setLoading("listing", false);
+              } catch (error) {
+                console.error("Error moving/copying items:", error);
+              } finally {
+                mutations.setLoading("listing", false);
+              }
+            };
 
-      if (this.clipboard.path === state.route.path) {
-        action(false, true);
-        return;
-      }
+            if (this.clipboard.path === state.route.path) {
+              action(false, true);
+              return;
+            }
 
-      const conflict = upload.checkConflict(items, state.req.items);
+            const conflict = upload.checkConflict(items, state.req.items);
 
-      if (conflict) {
-        this.currentPrompt = {
-          name: "replace-rename",
-          confirm: (event, option) => {
-            const overwrite = option === "overwrite";
-            const rename = option === "rename";
+            if (conflict) {
+              mutations.showHover({
+                name: "replace-rename",
+                confirm: (event, option) => {
+                  const overwrite = option === "overwrite";
+                  const rename = option === "rename";
+                  event.preventDefault();
+                  mutations.closeHovers();
+                  action(overwrite, rename);
+                },
+              });
+              return;
+            }
 
-            event.preventDefault();
-            mutations.closeHovers();
-            action(overwrite, rename);
+            action(false, false);
           },
-        };
-        return;
-      }
-
-      action(false, false);
+        },
+      });
     },
     colunmsResize() {
       document.documentElement.style.setProperty(
@@ -893,6 +936,7 @@ export default {
       this.dragCounter--;
     },
     async drop(event) {
+      event.preventDefault();
       const isInternal = Array.from(event.dataTransfer.types).includes(
         "application/x-filebrowser-internal-drag"
       );
@@ -986,6 +1030,127 @@ export default {
         });
       }
     },
+    startRectangleSelection(event) {
+      // Start rectangle selection when clicking on empty space
+      if (event.target.closest('.item') || event.target.closest('.header')) {
+        return;
+      }
+
+      // Don't start if it's a right click, this for avoid some weird issue with the context menu.
+      if (event.button !== 0) return;
+
+      this.isRectangleSelecting = true;
+
+      // Get the position to the listing view container
+      const listingRect = this.$refs.listingView.getBoundingClientRect();
+      this.rectangleStart = {
+        x: event.clientX - listingRect.left,
+        y: event.clientY - listingRect.top
+      };
+      this.rectangleEnd = {
+        x: event.clientX - listingRect.left,
+        y: event.clientY - listingRect.top
+      };
+
+      // Store the current selection state when starting rectangle
+      this.initialSelectionState = [...state.selected];
+
+      // Only clear selection when CTRL is not holded
+      const hasModifier = event.ctrlKey || event.metaKey;
+      if (!hasModifier) {
+        mutations.resetSelected();
+      }
+
+      event.preventDefault();
+    },
+
+    updateRectangleSelection(event) {
+      if (!this.isRectangleSelecting) return;
+
+      // Get the position to the listing view container
+      const listingRect = this.$refs.listingView.getBoundingClientRect();
+      this.rectangleEnd = {
+        x: event.clientX - listingRect.left,
+        y: event.clientY - listingRect.top
+      };
+
+      this.updateSelectedItemsInRectangle(event.ctrlKey || event.metaKey);
+    },
+
+    endRectangleSelection(event) {
+      if (!this.isRectangleSelecting) return;
+
+      this.isRectangleSelecting = false;
+      this.updateSelectedItemsInRectangle(event.ctrlKey || event.metaKey);
+
+      // Clear rectangle after a short delay
+      setTimeout(() => {
+        this.rectangleStart = { x: 0, y: 0 };
+        this.rectangleEnd = { x: 0, y: 0 };
+        this.initialSelectionState = [];
+      }, 100);
+    },
+
+    updateSelectedItemsInRectangle(isAdditive) {
+      if (!this.isRectangleSelecting) return;
+
+      const listingRect = this.$refs.listingView.getBoundingClientRect();
+      const rect = {
+        left: Math.min(this.rectangleStart.x, this.rectangleEnd.x),
+        top: Math.min(this.rectangleStart.y, this.rectangleEnd.y),
+        right: Math.max(this.rectangleStart.x, this.rectangleEnd.x),
+        bottom: Math.max(this.rectangleStart.y, this.rectangleEnd.y)
+      };
+
+      const rectangleSelectedIndexes = [];
+
+      // Get all item elements
+      const itemElements = this.$el.querySelectorAll('.item');
+
+      itemElements.forEach((element) => {
+        const elementRect = element.getBoundingClientRect();
+
+        // Convert element position to be relative to listing view, this allows selection while scrolling
+        const elementRelativeRect = {
+          left: elementRect.left - listingRect.left,
+          top: elementRect.top - listingRect.top,
+          right: elementRect.right - listingRect.left,
+          bottom: elementRect.bottom - listingRect.top
+        };
+
+        // Check if the item intersects with the rectangle
+        if (
+          elementRelativeRect.left < rect.right &&
+          elementRelativeRect.right > rect.left &&
+          elementRelativeRect.top < rect.bottom &&
+          elementRelativeRect.bottom > rect.top
+        ) {
+          const index = parseInt(element.getAttribute('data-index'));
+          if (!isNaN(index)) {
+            rectangleSelectedIndexes.push(index);
+          }
+        }
+      });
+
+      // Update selection based on modifier keys (ctrl/meta)
+      if (isAdditive) {
+        // only add more items to the current selection without reset selection
+        const newSelection = [...state.selected];
+        rectangleSelectedIndexes.forEach(index => {
+          if (!newSelection.includes(index)) {
+            newSelection.push(index);
+          }
+        });
+
+        mutations.resetSelected();
+        newSelection.forEach(index => mutations.addSelected(index));
+      } else {
+        // Select only the items in the rectangle and reset initial selection
+        // PS: If you don't want that just hold ctrl, the selection will not be reset, allowing multi select.
+        mutations.resetSelected();
+        rectangleSelectedIndexes.forEach(index => mutations.addSelected(index));
+      }
+    },
   },
 };
 </script>
@@ -1017,6 +1182,7 @@ export default {
 
 #listingView {
   min-height: 90vh !important;
+  position: relative;
 }
 
 .folder-items a {
@@ -1029,6 +1195,25 @@ export default {
   padding: 2em;
   max-width: 800px;
   margin: 0 auto;
+}
+
+.selection-rectangle {
+  position: absolute;
+  border: 2px solid var(--primaryColor);
+  background-color: color-mix(in srgb, var(--primaryColor) 25%, transparent);
+  border-radius: 8px;
+  pointer-events: none;
+  z-index: 10;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+#listingView.rectangle-selecting {
+  cursor: crosshair;
+  user-select: none;
+}
+
+#listingView.rectangle-selecting .item {
+  pointer-events: none;
 }
 
 </style>

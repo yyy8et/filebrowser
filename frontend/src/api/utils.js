@@ -1,7 +1,6 @@
 import { state } from "@/store";
-import { renew, logout } from "@/utils/auth";
+import { renew } from "@/utils/auth";
 import { notify } from "@/notify";
-import { getters } from "@/store/getters";
 
 export async function fetchURL(url, opts, auth = true) {
   opts = opts || {};
@@ -12,6 +11,7 @@ export async function fetchURL(url, opts, auth = true) {
   let res;
   try {
     res = await fetch(url, {
+      credentials: 'same-origin', // Ensure cookies are sent with all API requests
       headers: {
         "sessionId": state.sessionId,
         ...headers,
@@ -34,11 +34,6 @@ export async function fetchURL(url, opts, auth = true) {
   if (res.status < 200 || res.status > 299) {
     let error = new Error(await res.text());
     error.status = res.status;
-
-    if (auth && res.status == 401 && !getters.isShare()) {
-      logout();
-    }
-
     throw error;
   }
 

@@ -19,6 +19,7 @@
     :data-dir="isDir"
     :data-type="type"
     :data-name="name"
+    :data-index="index"
     :aria-label="name"
     :aria-selected="isSelected"
     @contextmenu="onRightClick"
@@ -149,10 +150,11 @@ export default {
     },
     isDraggable() {
       // @ts-ignore
-      return this.readOnly == undefined && state.user.permissions?.modify;
+      return this.readOnly == undefined && state.user.permissions?.modify || shareInfo.allowCreate;
     },
     canDrop() {
       if (!this.isDir || this.readOnly !== undefined) return false;
+
       for (const i of this.selected) {
         if (
           // @ts-ignore
@@ -162,11 +164,17 @@ export default {
         ) {
           return false;
         }
+
+        // Also check if we're trying to drop an item onto itself
+        // @ts-ignore
+        if (state.req.items[i].index === this.index) {
+          return false;
+        }
       }
       return true;
     },
     thumbnailUrl() {
-      if (!globalVars.enableThumbs) {
+      if (!globalVars.enableThumbs || !state.req.path || !this.name) {
         return "";
       }
       const previewPath = url.joinPath(state.req.path, this.name);
@@ -280,8 +288,15 @@ export default {
       // @ts-ignore
       return getters.getTime(this.modified);
     },
-    dragLeave() {
-      this.isDraggedOver = false;
+    /** @param {DragEvent} event */
+    dragLeave(event) {
+      // Only reset visual state for internal drags
+      const isInternal = Array.from(event.dataTransfer.types).includes(
+        "application/x-filebrowser-internal-drag"
+      );
+      if (isInternal) {
+        this.isDraggedOver = false;
+      }
     },
     /** @param {DragEvent} event */
     dragStart(event) {
@@ -300,18 +315,34 @@ export default {
     /** @param {DragEvent} event */
     dragOver(event) {
       if (!this.canDrop) return;
+
+      // Only allow internal drags (from filebrowser items), not external files from desktop
+      const isInternal = Array.from(event.dataTransfer.types).includes(
+        "application/x-filebrowser-internal-drag"
+      );
+
+      if (!isInternal) return;
+
       event.preventDefault();
       this.isDraggedOver = true;
     },
     /** @param {DragEvent} event */
     async drop(event) {
-      event.preventDefault();
-      event.stopPropagation();
       this.isDraggedOver = false;
 
-      if (!this.canDrop) {
+      // Only allow internal drags (from filebrowser items), not external files from desktop
+      const isInternal = Array.from(event.dataTransfer.types).includes(
+        "application/x-filebrowser-internal-drag"
+      );
+
+      if (!isInternal) {
+        // Don't handle external drags - let the parent ListingView handle them
         return;
       }
+
+      // Only stop propagation if we're actually going to handle this drop (moving files into a folder)
+      event.preventDefault();
+      event.stopPropagation();
 
       let items = [];
       for (let i of state.selected) {
@@ -326,11 +357,15 @@ export default {
         });
       }
 
-      const conflict = upload.checkConflict(
-        items,
-        // @ts-ignore
-        (await filesApi.fetchFiles(this.source, this.path)).items || []
-      );
+      let checkAction = async () => {
+        if (getters.isShare()) {
+          return await publicApi.fetchPub(this.path, shareInfo.hash);
+        } else {
+          return await filesApi.fetchFiles(this.source, this.path);
+        }
+      }
+      const response = await checkAction();
+      const conflict = upload.checkConflict(items, response?.items || [] );
 
       /**
        * @param {boolean} overwrite
@@ -346,7 +381,11 @@ export default {
         });
 
         try {
-          await filesApi.moveCopy(items, "move", overwrite, rename);
+          if (getters.isShare()) {
+            await publicApi.moveCopy(items, "move", overwrite, rename);
+          } else {
+            await filesApi.moveCopy(items, "move", overwrite, rename);
+          }
           // Close the prompt after successful operation
           mutations.closeHovers();
         } catch (error) {
