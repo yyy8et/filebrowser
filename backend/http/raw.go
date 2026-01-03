@@ -19,6 +19,7 @@ import (
 	"github.com/gtsteffaniak/filebrowser/backend/common/settings"
 	"github.com/gtsteffaniak/filebrowser/backend/common/utils"
 	"github.com/gtsteffaniak/filebrowser/backend/indexing"
+	"github.com/gtsteffaniak/filebrowser/backend/indexing/iteminfo"
 	"github.com/gtsteffaniak/go-logger/logger"
 	"golang.org/x/time/rate"
 )
@@ -57,21 +58,45 @@ func (r *throttledReadSeeker) Seek(offset int64, whence int) (int64, error) {
 	return r.rs.Seek(offset, whence)
 }
 
-func setContentDisposition(w http.ResponseWriter, r *http.Request, fileName string) {
-	if r.URL.Query().Get("inline") == "true" {
-		w.Header().Set("Content-Disposition", "inline; filename*=utf-8''"+url.PathEscape(fileName))
-	} else {
-		// As per RFC6266 section 4.3
-		w.Header().Set("Content-Disposition", "attachment; filename*=utf-8''"+url.PathEscape(fileName))
+// toASCIIFilename converts a filename to ASCII-safe format by replacing non-ASCII characters with underscores
+func toASCIIFilename(fileName string) string {
+	var result strings.Builder
+	for _, r := range fileName {
+		if r > 127 {
+			// Replace non-ASCII characters with underscore
+			result.WriteRune('_')
+		} else {
+			result.WriteRune(r)
+		}
 	}
+	return result.String()
+}
+
+func setContentDisposition(w http.ResponseWriter, r *http.Request, fileName string) {
+	dispositionType := "attachment"
+	if r.URL.Query().Get("inline") == "true" {
+		dispositionType = "inline"
+	}
+
+	// standard: ASCII-only safe fallback
+	asciiFileName := toASCIIFilename(fileName)
+	// RFC 5987: UTF-8 encoded
+	encodedFileName := url.PathEscape(fileName)
+
+	// Always set both filename (ASCII) and filename* (UTF-8) for maximum compatibility (RFC 6266)
+	w.Header().Set("Content-Disposition", fmt.Sprintf("%s; filename=%q; filename*=utf-8''%s", dispositionType, asciiFileName, encodedFileName))
 }
 
 // rawHandler serves the raw content of a file, multiple files, or directory in various formats.
 // @Summary Get raw content of a file, multiple files, or directory
 // @Description Returns the raw content of a file, multiple files, or a directory. Supports downloading files as archives in various formats.
+// @Description
+// @Description **Filename Encoding:**
+// @Description - The Content-Disposition header will always include both:
+// @Description   1. `filename="..."`: An ASCII-safe version of the filename for compatibility.
+// @Description   2. `filename*=utf-8”...`: The full UTF-8 encoded filename (RFC 6266/5987) for modern clients.
 // @Tags Resources
 // @Accept json
-// @Produce json
 // @Param files query string true "a list of files in the following format 'source::filename' and separated by '||' with additional items in the list. (required)"
 // @Param inline query bool false "If true, sets 'Content-Disposition' to 'inline'. Otherwise, defaults to 'attachment'."
 // @Param algo query string false "Compression algorithm for archiving multiple files or directories. Options: 'zip' and 'tar.gz'. Default is 'zip'."
@@ -110,20 +135,20 @@ func addFile(path string, d *requestContext, tarWriter *tar.Writer, zipWriter *z
 	if idx == nil {
 		return fmt.Errorf("source %s is not available", source)
 	}
-	if d.share != nil {
-		_, err = files.FileInfoFaster(utils.FileOptions{
-			Path:   path,
-			Source: source,
-			Expand: false,
-		}, nil)
-	} else {
-		_, err = files.FileInfoFaster(utils.FileOptions{
-			Username: d.user.Username,
-			Path:     path,
-			Source:   source,
-			Expand:   false,
-		}, store.Access)
+
+	// Check access control directly for each file and silently skip if access is denied
+	if d.share == nil && store.Access != nil {
+		if !store.Access.Permitted(idx.Path, path, d.user.Username) {
+			return nil // Silently skip this file/folder
+		}
 	}
+
+	// Verify file exists
+	_, err = files.FileInfoFaster(utils.FileOptions{
+		Path:   path,
+		Source: source,
+		Expand: false,
+	}, nil)
 	if err != nil {
 		return err
 	}
@@ -155,6 +180,20 @@ func addFile(path string, d *requestContext, tarWriter *tar.Writer, zipWriter *z
 			// Skip adding `.` (current directory)
 			if relPath == "." {
 				return nil
+			}
+
+			// Check access control for each file/folder during walk
+			if d.share == nil {
+				indexRelPath := utils.JoinPathAsUnix(path, relPath)
+				indexRelPath = filepath.ToSlash(indexRelPath) // Normalize separators
+				if !store.Access.Permitted(idx.Path, indexRelPath, d.user.Username) {
+					// Skip this file/folder silently
+					if fileInfo.IsDir() {
+						// Skip the entire directory by returning filepath.SkipDir
+						return filepath.SkipDir
+					}
+					return nil
+				}
 			}
 
 			// Prepend base folder name unless flatten is true
@@ -254,9 +293,31 @@ func rawFilesHandler(w http.ResponseWriter, r *http.Request, d *requestContext, 
 	var err error
 	var userscope string
 	fileName := filepath.Base(firstFilePath)
+
+	// Check if this is an OnlyOffice file early for error logging
+	isOnlyOffice := isOnlyOfficeCompatibleFile(fileName) && config.Integrations.OnlyOffice.Url != ""
+	var documentId string
+	var logContext *OnlyOfficeLogContext
+
 	if d.share == nil {
 		userscope, err = settings.GetScopeFromSourceName(d.user.Scopes, firstFileSource)
 		if err != nil {
+			// Send OnlyOffice error log if this was an OnlyOffice file
+			if isOnlyOffice {
+				// Try to get document ID for error logging
+				idx := indexing.GetIndex(firstFileSource)
+				if idx != nil {
+					tempPath := utils.JoinPathAsUnix(userscope, firstFilePath)
+					if realPath, _, realErr := idx.GetRealPath(tempPath); realErr == nil {
+						if docId, _ := getOnlyOfficeId(realPath); docId != "" {
+							if ctx := getOnlyOfficeLogContext(docId); ctx != nil {
+								sendOnlyOfficeLogEvent(ctx, "ERROR", "download",
+									fmt.Sprintf("OnlyOffice download failed - source not available: %s - %v", firstFilePath, err))
+							}
+						}
+					}
+				}
+			}
 			return http.StatusForbidden, err
 		}
 		firstFilePath = utils.JoinPathAsUnix(userscope, firstFilePath)
@@ -264,10 +325,24 @@ func rawFilesHandler(w http.ResponseWriter, r *http.Request, d *requestContext, 
 	// For shares, the path is already correctly resolved by publicRawHandler
 	idx := indexing.GetIndex(firstFileSource)
 	if idx == nil {
+		// Send OnlyOffice error log if this was an OnlyOffice file
+		if isOnlyOffice {
+			sendOnlyOfficeLogEvent(logContext, "ERROR", "download",
+				fmt.Sprintf("OnlyOffice download failed - source index not available: %s", firstFileSource))
+		}
 		return http.StatusInternalServerError, fmt.Errorf("source %s is not available", firstFileSource)
 	}
 	realPath, isDir, err := idx.GetRealPath(firstFilePath)
 	if err != nil {
+		// Send OnlyOffice error log if this was an OnlyOffice file
+		if isOnlyOffice {
+			if docId, _ := getOnlyOfficeId(realPath); docId != "" {
+				if ctx := getOnlyOfficeLogContext(docId); ctx != nil {
+					sendOnlyOfficeLogEvent(ctx, "ERROR", "download",
+						fmt.Sprintf("OnlyOffice download failed - could not resolve path: %s - %v", firstFilePath, err))
+				}
+			}
+		}
 		return http.StatusInternalServerError, err
 	}
 	// Compute estimated download size
@@ -277,8 +352,34 @@ func rawFilesHandler(w http.ResponseWriter, r *http.Request, d *requestContext, 
 	}
 	// ** Single file download with Content-Length **
 	if len(fileList) == 1 && !isDir {
+		// Get document ID and log context for OnlyOffice downloads
+		if isOnlyOffice {
+			documentId, _ = getOnlyOfficeId(realPath)
+			if documentId != "" {
+				logContext = getOnlyOfficeLogContext(documentId)
+			}
+		}
+
+		// Verify access control before opening the file (direct rule check)
+		if d.share == nil && store.Access != nil {
+			if !store.Access.Permitted(idx.Path, firstFilePath, d.user.Username) {
+				logger.Debugf("user %s denied access to path %s", d.user.Username, firstFilePath)
+				// Send OnlyOffice error log if this was an OnlyOffice download
+				if isOnlyOffice && logContext != nil {
+					sendOnlyOfficeLogEvent(logContext, "ERROR", "download",
+						fmt.Sprintf("OnlyOffice download failed - access denied by rule: %s", firstFilePath))
+				}
+				return http.StatusForbidden, fmt.Errorf("access denied to path %s", firstFilePath)
+			}
+		}
+
 		fd, err2 := os.Open(realPath)
 		if err2 != nil {
+			// Send OnlyOffice error log if this was an OnlyOffice download
+			if isOnlyOffice && logContext != nil {
+				sendOnlyOfficeLogEvent(logContext, "ERROR", "download",
+					fmt.Sprintf("OnlyOffice download failed - could not open file: %s - %v", firstFilePath, err2))
+			}
 			return http.StatusInternalServerError, err2
 		}
 		defer fd.Close()
@@ -286,7 +387,21 @@ func rawFilesHandler(w http.ResponseWriter, r *http.Request, d *requestContext, 
 		// Get file size
 		fileInfo, err2 := fd.Stat()
 		if err2 != nil {
+			// Send OnlyOffice error log if this was an OnlyOffice download
+			if isOnlyOffice && logContext != nil {
+				sendOnlyOfficeLogEvent(logContext, "ERROR", "download",
+					fmt.Sprintf("OnlyOffice download failed - could not get file info: %s - %v", firstFilePath, err2))
+			}
 			return http.StatusInternalServerError, err2
+		}
+
+		// Send success log for OnlyOffice downloads
+		if isOnlyOffice && logContext != nil {
+			logger.Infof("OnlyOffice Server is downloading file: %s (documentId: %s)",
+				firstFilePath, documentId)
+
+			sendOnlyOfficeLogEvent(logContext, "INFO", "download",
+				fmt.Sprintf("OnlyOffice Server downloading file: %s", firstFilePath))
 		}
 
 		// Set headers
@@ -301,6 +416,7 @@ func rawFilesHandler(w http.ResponseWriter, r *http.Request, d *requestContext, 
 		}
 		// serve content allows for range requests.
 		// video scrubbing, etc.
+		// Note: http.ServeContent will respect our already-set Content-Disposition header
 		var reader io.ReadSeeker = fd
 		if d.share != nil && d.share.MaxBandwidth > 0 {
 			// convert KB/s to B/s
@@ -338,7 +454,8 @@ func rawFilesHandler(w http.ResponseWriter, r *http.Request, d *requestContext, 
 	if len(fileList) == 1 && isDir {
 		baseDirName = filepath.Base(realPath)
 	}
-	fileName = url.PathEscape(baseDirName + extension)
+	// Store original filename before any encoding
+	originalFileName := baseDirName + extension
 
 	archiveData := filepath.Join(config.Server.CacheDir, utils.InsecureRandomIdentifier(10))
 	if extension == ".zip" {
@@ -368,11 +485,12 @@ func rawFilesHandler(w http.ResponseWriter, r *http.Request, d *requestContext, 
 
 	sizeInMB := fileInfo.Size() / 1024 / 1024
 	if sizeInMB > 500 {
-		logger.Debugf("User %v is downloading large (%d MB) file: %v", d.user.Username, sizeInMB, fileName)
+		logger.Debugf("User %v is downloading large (%d MB) file: %v", d.user.Username, sizeInMB, originalFileName)
 	}
 
 	// Set headers AFTER computing actual archive size
-	w.Header().Set("Content-Disposition", "attachment; filename*=utf-8''"+fileName)
+	// Use the same setContentDisposition logic for archives
+	setContentDisposition(w, r, originalFileName)
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", fileInfo.Size()))
 	w.Header().Set("Content-Type", "application/octet-stream")
 
@@ -416,6 +534,12 @@ func computeArchiveSize(fileList []string, d *requestContext) (int64, error) {
 				return 0, fmt.Errorf("source %s is not available for user %s", source, d.user.Username)
 			}
 			path = utils.JoinPathAsUnix(userScope, path)
+
+			// Check access control for each file in the archive
+			// Silently skip if access is denied (as if the file doesn't exist)
+			if store.Access != nil && !store.Access.Permitted(idx.Path, path, d.user.Username) {
+				continue // Skip this file and continue with the next one
+			}
 		}
 		// For shares, the path is already correctly resolved by publicRawHandler
 		realPath, isDir, err := idx.GetRealPath(path)
@@ -443,14 +567,19 @@ func createZip(d *requestContext, tmpDirPath string, filenames ...string) error 
 	defer file.Close()
 
 	zipWriter := zip.NewWriter(file)
-	defer zipWriter.Close()
 
 	for _, fname := range filenames {
 		err := addFile(fname, d, nil, zipWriter, false)
 		if err != nil {
+			// Access control failures return nil, so any error here is a real error
 			logger.Errorf("Failed to add %s to ZIP: %v", fname, err)
 			return err
 		}
+	}
+
+	// Close the ZIP writer and check for errors
+	if err := zipWriter.Close(); err != nil {
+		return fmt.Errorf("failed to finalize ZIP archive: %w", err)
 	}
 
 	return nil
@@ -464,9 +593,7 @@ func createTarGz(d *requestContext, tmpDirPath string, filenames ...string) erro
 	defer file.Close()
 
 	gzWriter := gzip.NewWriter(file)
-	defer gzWriter.Close()
 	tarWriter := tar.NewWriter(gzWriter)
-	defer tarWriter.Close()
 
 	for _, fname := range filenames {
 		err := addFile(fname, d, tarWriter, nil, false)
@@ -476,5 +603,18 @@ func createTarGz(d *requestContext, tmpDirPath string, filenames ...string) erro
 		}
 	}
 
+	// Close writers in reverse order and check for errors
+	if err := tarWriter.Close(); err != nil {
+		return fmt.Errorf("failed to finalize TAR archive: %w", err)
+	}
+	if err := gzWriter.Close(); err != nil {
+		return fmt.Errorf("failed to finalize GZIP compression: %w", err)
+	}
+
 	return nil
+}
+
+// isOnlyOfficeCompatibleFile checks if a file extension is supported by OnlyOffice
+func isOnlyOfficeCompatibleFile(fileName string) bool {
+	return iteminfo.IsOnlyOffice(fileName)
 }

@@ -16,7 +16,8 @@ frontend:
     - text: "A playwright test"
       url: "https://playwright.dev/"
       title: "Playwright"
-
+  styling:
+    disableEventThemes: true
 auth:
   methods:
     password:
@@ -28,6 +29,12 @@ auth:
       logoutRedirectUrl: "https://localhost/api/auth/logout2"
 
 userDefaults:
+  preview:
+    image: true
+    popup: true
+    video: true
+    office: true
+    highQuality: true
   darkMode: true
   disableSettings: false
   singleClick: false

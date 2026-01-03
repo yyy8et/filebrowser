@@ -42,6 +42,11 @@ func InitializeDb(path string) (*bolt.BoltStore, bool, error) {
 		return nil, exists, err
 	}
 	if !exists {
+		if settings.Env.IsPlaywright || settings.Env.IsDevMode {
+			settings.Env.IsFirstLoad = false
+		} else {
+			settings.Env.IsFirstLoad = true
+		}
 		quickSetup(store)
 	}
 
@@ -94,6 +99,7 @@ func quickSetup(store *bolt.BoltStore) {
 		}
 		user.LockPassword = false
 		user.Permissions = settings.AdminPerms()
+		user.ShowFirstLogin = settings.Env.IsFirstLoad && user.Permissions.Admin
 		logger.Debugf("Creating user as admin: %v %v", user.Username, user.Password)
 		err = store.Users.Save(user, true, true)
 		utils.CheckErr("store.Users.Save", err)
@@ -101,8 +107,9 @@ func quickSetup(store *bolt.BoltStore) {
 }
 
 // create new user
-func CreateUser(userInfo users.User) error {
+func CreateUser(userInfo users.User, permissions users.Permissions) error {
 	newUser := &userInfo
+	newUser.ShowFirstLogin = settings.Env.IsFirstLoad && newUser.Permissions.Admin
 	if userInfo.LoginMethod == "password" {
 		if userInfo.Password == "" {
 			return fmt.Errorf("password is required to create a password login user")
@@ -118,6 +125,8 @@ func CreateUser(userInfo users.User) error {
 	if userInfo.Username == "" {
 		return fmt.Errorf("username is required to create a user")
 	}
+	settings.ApplyUserDefaults(newUser)
+	newUser.Permissions = permissions
 	logger.Debugf("Creating user: %v %v", userInfo.Username, userInfo.Scopes)
 	// create new home directories
 	err := userStore.Save(newUser, true, false)

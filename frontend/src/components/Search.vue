@@ -1,49 +1,33 @@
 <template>
-  <div
-    id="search"
-    :class="{ active, ongoing, 'dark-mode': isDarkMode }"
-    @click="clearContext"
-  >
+  <div id="search" :class="{ active, ongoing, 'dark-mode': isDarkMode }" @click="clearContext">
     <!-- Search input section -->
-    <div id="search-input" @click="open">
+    <div id="search-input" @click="open" :class="{ 'halloween-eyes': eventTheme === 'halloween' }">
+      <div id="halloween-eyes" v-if="eventTheme === 'halloween' && active">
+        <div class="eye left">
+          <div class="pupil"></div>
+        </div>
+        <div class="eye right">
+          <div class="pupil"></div>
+        </div>
+      </div>
       <!-- Close button visible when search is active -->
-      <button
-        v-if="active"
-        class="action"
-        @click="close"
-        :aria-label="$t('buttons.close')"
-        :title="$t('buttons.close')"
-      >
+      <button v-if="active" class="action" @click="close" :aria-label="$t('general.close')"
+        :title="$t('general.close')">
         <i class="material-icons">close</i>
       </button>
       <!-- Search icon when search is not active -->
       <i v-else class="material-icons">search</i>
       <!-- Input field for search -->
-      <input
-        id="main-input"
-        class="main-input"
-        type="text"
-        @keyup.exact="keyup"
-        @input="submit"
-        ref="input"
-        :autofocus="active"
-        v-model.trim="value"
-        :aria-label="$t('search.search')"
-        :placeholder="$t('search.search')"
-      />
+      <input id="main-input" class="main-input" :class="{ 'halloween-theme': eventTheme === 'halloween' }" type="text"
+        @keyup.exact="keyup" @input="submit" ref="input" :autofocus="active" v-model.trim="value"
+        aria-label="search input" :placeholder="$t('general.search', { suffix: '...' })" />
     </div>
 
     <!-- Search results for desktop -->
     <div v-show="active" id="results" class="fb-shadow" ref="result">
-      <div class="inputWrapper" style="display: flex">
-        <select
-          v-if="multipleSources"
-          class="searchContext button input"
-          aria-label="search-path"
-          v-model="selectedSource"
-          :value="selectedSource"
-          @change="updateSource"
-        >
+      <div class="inputWrapper">
+        <select v-if="multipleSources" class="searchContext button input" aria-label="search sources dropdown"
+          v-model="selectedSource" :value="selectedSource" @change="updateSource">
           <option v-for="(info, name) in sourceInfo" :key="info" :value="name">
             {{ name }}
           </option>
@@ -57,50 +41,38 @@
         <div v-if="!disableSearchOptions">
           <div v-if="active">
             <div v-if="isMobile">
-              <ButtonGroup
-                :buttons="toggleOptionButton"
-                @button-clicked="enableOptions"
-                @remove-button-clicked="disableOptions"
-              />
+              <ButtonGroup :buttons="toggleOptionButton" @button-clicked="enableOptions"
+                @remove-button-clicked="disableOptions" />
             </div>
-            <div v-show="showOptions">
-              <!-- Button groups for filtering search results -->
-              <ButtonGroup
-                :buttons="folderSelect"
-                @button-clicked="addToTypes"
-                @remove-button-clicked="removeFromTypes"
-                @disableAll="folderSelectClicked()"
-                @enableAll="resetButtonGroups()"
-              />
-              <ButtonGroup
-                :buttons="typeSelect"
-                @button-clicked="addToTypes"
-                @remove-button-clicked="removeFromTypes"
-                :isDisabled="isTypeSelectDisabled"
-              />
-              <!-- Inputs for filtering by file size -->
-              <div class="sizeConstraints">
-                <div class="sizeInputWrapper">
-                  <p>{{ $t("search.smallerThan") }}</p>
-                  <input
-                    class="sizeInput"
-                    v-model="smallerThan"
-                    type="number"
-                    min="0"
-                    :placeholder="$t('search.number')"
-                  /><p>MB</p> <!-- eslint-disable-line @intlify/vue-i18n/no-raw-text -->
+            <transition name="expand">
+              <div v-show="showOptions" class="search-options">
+                <!-- Button groups for filtering search results -->
+                <ButtonGroup :buttons="folderSelect" @button-clicked="addToTypes"
+                  @remove-button-clicked="removeFromTypes" @disableAll="folderSelectClicked()"
+                  @enableAll="resetButtonGroups()" />
+                <ButtonGroup :buttons="typeSelect" @button-clicked="addToTypes" @remove-button-clicked="removeFromTypes"
+                  :isDisabled="isTypeSelectDisabled" />
+                <!-- Inputs for filtering by file size -->
+                <div class="sizeConstraints">
+                  <div class="sizeInputWrapper">
+                    <p>{{ $t("search.smallerThan") }}</p>
+                    <input class="sizeInput" v-model="smallerThan" type="number" min="0"
+                      :placeholder="$t('general.number')" />
+                    <p>MB</p> <!-- eslint-disable-line @intlify/vue-i18n/no-raw-text -->
+                  </div>
+                  <div class="sizeInputWrapper">
+                    <p>{{ $t("search.largerThan") }}</p>
+                    <input class="sizeInput" v-model="largerThan" type="number" :placeholder="$t('general.number')" />
+                    <p>MB</p> <!-- eslint-disable-line @intlify/vue-i18n/no-raw-text -->
+                  </div>
                 </div>
-                <div class="sizeInputWrapper">
-                  <p>{{ $t("search.largerThan") }}</p>
-                  <input
-                    class="sizeInput"
-                    v-model="largerThan"
-                    type="number"
-                    :placeholder="$t('search.number')"
-                  /><p>MB</p> <!-- eslint-disable-line @intlify/vue-i18n/no-raw-text -->
+                <!-- Toggle for showing preview images -->
+                <div class="search-option-item">
+                  <ToggleSwitch v-model="showPreviewImages" :name="$t('search.showPreviewImages')"
+                    :description="$t('search.showPreviewImagesDescription')" />
                 </div>
               </div>
-            </div>
+            </transition>
           </div>
         </div>
         <!-- Loading icon when search is ongoing -->
@@ -110,26 +82,22 @@
         <!-- Message when no results are found -->
         <div class="searchPrompt" v-show="isEmpty && !isRunning">
           <p>{{ noneMessage }}</p>
-          <div class="helpButton" @click="toggleHelp()">{{ $t("sidebar.help") }}</div>
-        </div>
-        <!-- Help text section -->
-        <div class="helpText" v-if="showHelp">
-          <p>{{ $t("search.helpText1") }}</p>
-          <p>{{ $t("search.helpText2") }}</p>
+          <i class="no-select material-symbols-outlined tooltip-info-icon" @mouseenter="showHelpTooltip"
+            @mouseleave="hideTooltip">
+            help
+          </i>
         </div>
         <!-- List of search results -->
         <ul v-show="results.length > 0">
-          <li
-            v-for="(s, k) in results"
-            :key="k"
-            class="search-entry clickable"
-            :class="{ active: activeStates[k] }"
-            :aria-label="baseName(s.path)"
-          >
+          <li v-for="(s, k) in results" :key="k" class="search-entry clickable"
+            :class="{ active: activeStates[k], 'large-icons': showPreviewImages }" :aria-label="baseName(s.path)">
             <a :href="getRelative(s.path)" @contextmenu="addSelected(event, s)">
-              <Icon :mimetype="s.type" :filename="s.name" />
+              <Icon :mimetype="s.type" :filename="baseName(s.path)"
+                :hasPreview="showPreviewImages && (s.hasPreview || false)"
+                :thumbnailUrl="showPreviewImages ? getThumbnailUrl(s) : ''" />
               <span class="text-container">
-                {{ basePath(s.path, s.type == "directory") }}{{ baseName(s.path) }} <!-- eslint-disable-line @intlify/vue-i18n/no-raw-text -->
+                {{ basePath(s.path, s.type == "directory") }}{{ baseName(s.path) }}
+                <!-- eslint-disable-line @intlify/vue-i18n/no-raw-text -->
               </span>
               <div class="filesize">{{ humanSize(s.size) }}</div>
             </a>
@@ -142,12 +110,13 @@
 
 <script>
 import ButtonGroup from "./ButtonGroup.vue";
-import { search } from "@/api";
+import { search, filesApi } from "@/api";
 import { getters, mutations, state } from "@/store";
 import { getHumanReadableFilesize } from "@/utils/filesizes";
 import { url } from "@/utils/";
 import Icon from "@/components/files/Icon.vue";
-import { globalVars, serverHasMultipleSources } from "@/utils/constants";
+import ToggleSwitch from "@/components/settings/ToggleSwitch.vue";
+import { globalVars } from "@/utils/constants";
 
 var boxes = {
   folder: { label: "folders", icon: "folder" },
@@ -163,6 +132,7 @@ export default {
   components: {
     ButtonGroup,
     Icon,
+    ToggleSwitch,
   },
   name: "search",
   data: function () {
@@ -172,17 +142,17 @@ export default {
       noneMessage: this.$t("search.typeToSearch", { minSearchLength: globalVars.minSearchLength }),
       searchTypes: "",
       isTypeSelectDisabled: false,
-      showHelp: false,
+      showPreviewImages: false,
       folderSelect: [
         { label: this.$t("search.onlyFolders"), value: "type:folder" },
         { label: this.$t("search.onlyFiles"), value: "type:file" },
       ],
       typeSelect: [
-        { label: this.$t("search.photos"), value: "type:image" },
-        { label: this.$t("search.audio"), value: "type:audio" },
-        { label: this.$t("search.videos"), value: "type:video" },
-        { label: this.$t("search.documents"), value: "type:doc" },
-        { label: this.$t("search.archives"), value: "type:archive" },
+        { label: this.$t("general.photos"), value: "type:image" },
+        { label: this.$t("general.audio"), value: "type:audio" },
+        { label: this.$t("general.videos"), value: "type:video" },
+        { label: this.$t("general.documents"), value: "type:doc" },
+        { label: this.$t("general.archives"), value: "type:archive" },
       ],
       toggleOptionButton: [{ label: this.$t("search.showOptions") }],
       value: "",
@@ -214,9 +184,7 @@ export default {
         mutations.closeHovers();
         return;
       }
-      if (state.serverHasMultipleSources) {
-        this.selectedSource = state.sources.current;
-      }
+      this.selectedSource = state.sources.current;
       setTimeout(() => {
         resultList.classList.add("active");
         document.getElementById("main-input").focus();
@@ -230,9 +198,7 @@ export default {
     },
   },
   mounted() {
-    if (state.serverHasMultipleSources) {
-      this.selectedSource = state.sources.current;
-    }
+    this.selectedSource = state.sources.current;
     // Adjust contextmenu listener based on browser
     if (state.isSafari) {
       // For Safari, add touchstart or mousedown to open the context menu
@@ -249,15 +215,15 @@ export default {
       // For other browsers, use regular contextmenu
       this.$el.addEventListener("contextmenu", this.openContext);
     }
-    
+
     // Add keyboard event listener for "/" to activate search
     this.handleKeydown = (event) => {
-      if (event.key === '/' && !state.isSearchActive) {
+      if (event.key === '/' && !state.isSearchActive && getters.currentPrompt() === null) {
         event.preventDefault();
         this.open();
       }
     };
-    
+
     document.addEventListener('keydown', this.handleKeydown);
   },
   beforeUnmount() {
@@ -271,13 +237,16 @@ export default {
     } else {
       this.$el.removeEventListener("contextmenu", this.openContext);
     }
-    
+
     // Clean up keyboard event listener
     if (this.handleKeydown) {
       document.removeEventListener('keydown', this.handleKeydown);
     }
   },
   computed: {
+    eventTheme() {
+      return getters.eventTheme();
+    },
     disableSearchOptions() {
       return state.user.disableSearchOptions;
     },
@@ -313,9 +282,6 @@ export default {
     },
     isRunning() {
       return this.ongoing;
-    },
-    searchHelp() {
-      return this.showHelp;
     },
     activeStates() {
       const selectedItems = state.selected ? [].concat(state.selected) : [];
@@ -409,11 +375,7 @@ export default {
       const context = url.removeTrailingSlash(this.getContext)
       const encodedPath = encodeURIComponent(context + "/" + path).replaceAll("%2F", "/");
       let fullpath = encodedPath;
-      if (serverHasMultipleSources) {
-        fullpath = globalVars.baseURL+"files/" + this.selectedSource + encodedPath;
-      } else {
-        fullpath = globalVars.baseURL+"files" + encodedPath;
-      }
+      fullpath = globalVars.baseURL+"files/" + this.selectedSource + encodedPath;
       return fullpath;
     },
     getIcon(mimetype) {
@@ -475,6 +437,7 @@ export default {
     resetSearchFilters() {
       this.searchTypes = "";
       this.hiddenOptions = true;
+      this.showPreviewImages = false;
     },
     removeFromTypes(string) {
       if (string == null || string == "") {
@@ -494,7 +457,6 @@ export default {
     async submit(event) {
       this.results = [];
 
-      this.showHelp = false;
       if (event != undefined) {
         event.preventDefault();
       }
@@ -521,11 +483,32 @@ export default {
         this.noneMessage = this.$t("search.noResults");
       }
     },
-    toggleHelp() {
-      this.showHelp = !this.showHelp;
+    showHelpTooltip(event) {
+      const helpText = `${this.$t("search.helpText1")}\n\n${this.$t("search.helpText2")}`;
+      mutations.showTooltip({
+        content: helpText,
+        x: event.clientX,
+        y: event.clientY,
+      });
+    },
+    hideTooltip() {
+      mutations.hideTooltip();
     },
     clearContext() {
       mutations.closeHovers();
+    },
+    getThumbnailUrl(s) {
+      if (!s.hasPreview) {
+        return "";
+      }
+      try {
+        const source = this.selectedSource || state.sources.current;
+        const path = s.path;
+        const modified = s.modified || "";
+        return filesApi.getPreviewURL(source, path, modified);
+      } catch (err) {
+        return "";
+      }
     },
     addSelected(event, s) {
       const pathParts = url.removeTrailingSlash(s.path).split("/");
@@ -548,18 +531,25 @@ export default {
 .sizeInputWrapper {
   border: 1px solid #ccc;
 }
+
 .main-input {
   width: 100%;
 }
 
+.inputWrapper {
+  display: flex;
+  align-items: stretch;
+}
+
 .searchContext {
+  height: auto;
+  margin-top: 0;
   width: 100%;
   padding: 0.5em 1em;
   background: var(--primaryColor);
   color: white;
-  border-left: 1px solid gray;
-  border-right: 1px solid gray;
   word-wrap: break-word;
+  margin-bottom: 0 !important;
 }
 
 .searchContext.input {
@@ -570,6 +560,7 @@ export default {
   width: 25%;
   min-width: 7em;
   max-width: 15em;
+  height: auto;
 }
 
 .searchContext.input option {
@@ -582,7 +573,7 @@ export default {
   color: white;
 }
 
-#results > #result-list {
+#results>#result-list {
   max-height: 80vh;
   width: 35em;
   overflow: scroll;
@@ -590,6 +581,7 @@ export default {
   -webkit-transition: width 0.3s ease 0s;
   transition: width 0.3s ease 0s;
   background-color: unset;
+  border-radius: 0 0 1em 1em;
 }
 
 #results {
@@ -695,6 +687,12 @@ export default {
   background-color: var(--surfacePrimary);
 }
 
+/* Toggle switch styling in search options */
+.search-option-item {
+  margin: 1em;
+}
+
+
 .text-container {
   margin-left: 0.25em;
   white-space: nowrap;
@@ -725,7 +723,7 @@ body.rtl #search #result {
   direction: ltr;
 }
 
-#search #result > div > *:first-child {
+#search #result>div>*:first-child {
   margin-top: 0;
 }
 
@@ -735,7 +733,7 @@ body.rtl #search #result {
 }
 
 /* Search Results */
-body.rtl #search #result ul > * {
+body.rtl #search #result ul>* {
   direction: ltr;
   text-align: left;
 }
@@ -841,10 +839,6 @@ body.rtl #search .boxes h3 {
   /* IE and Edge */
 }
 
-.helpText {
-  padding: 1em;
-}
-
 .sizeConstraints {
   display: flex;
   flex-wrap: wrap;
@@ -854,22 +848,19 @@ body.rtl #search .boxes h3 {
   justify-content: center;
 }
 
-.helpButton {
-  position: absolute;
-  right: 10px;
-  cursor: pointer;
-  text-align: center;
-  background: rgb(211, 211, 211);
-  padding: 0.25em;
-  border-radius: 0.25em;
-}
-
 .searchPrompt {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-content: center;
   justify-content: center;
   align-items: center;
+  gap: 0.5em;
+}
+
+.searchPrompt .tooltip-info-icon {
+  font-size: 1.5rem;
+  cursor: pointer;
+  color: var(--primaryColor);
 }
 
 .filesize {
@@ -879,6 +870,29 @@ body.rtl #search .boxes h3 {
   padding-left: 0.5em;
   padding-right: 0.5em;
   min-width: fit-content;
+}
+
+/* Smooth expand/collapse animation for search options */
+.expand-enter-active,
+.expand-leave-active {
+  transition: all 0.3s ease;
+  overflow: hidden;
+}
+
+.expand-enter-from,
+.expand-leave-to {
+  max-height: 0;
+  opacity: 0;
+}
+
+.expand-enter-to,
+.expand-leave-from {
+  max-height: 500px;
+  opacity: 1;
+}
+
+.search-options {
+  overflow: hidden;
 }
 
 @media (max-width: 800px) {
@@ -936,7 +950,7 @@ body.rtl #search .boxes h3 {
   }
 
   #result-list {
-    width:100vw !important;
+    width: 100vw !important;
     max-width: 100vw !important;
     left: 0;
     top: 4em;
@@ -947,5 +961,4 @@ body.rtl #search .boxes h3 {
     flex-direction: column;
   }
 }
-
 </style>

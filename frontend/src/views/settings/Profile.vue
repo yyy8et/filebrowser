@@ -5,7 +5,7 @@
   <div class="card-content">
     <form>
       <div class="card-content">
-        <SettingsItem :title="$t('settings.listingOptions')" :collapsable="true"
+        <SettingsItem aria-label="listingOptions" :title="$t('settings.listingOptions')" :collapsable="true"
           :force-collapsed="isSectionCollapsed('listingOptions')" @toggle="handleSectionToggle('listingOptions')">
           <div class="settings-items">
             <ToggleSwitch class="item" v-model="localuser.deleteWithoutConfirming" @change="updateSettings"
@@ -42,25 +42,9 @@
             <ToggleSwitch class="item" v-model="localuser.preview.folder" @change="updateSettings"
               :name="$t('profileSettings.previewFolder')"
               :description="$t('profileSettings.previewFolderDescription')" />
-            <div class="form-flex-group">
-              <h3>{{ $t("profileSettings.defaultLandingPage") }}</h3>
-              <i class="no-select material-symbols-outlined tooltip-info-icon"
-                @mouseenter="showTooltip($event, $t('profileSettings.defaultLandingPageDescription'))"
-                @mouseleave="hideTooltip">
-                help
-              </i>
-            </div>
-            <div class="form-flex-group">
-              <input class="input form-form flat-right" type="text"
-                :placeholder="$t('profileSettings.defaultLandingPageDescription')" id="defaultLandingPage"
-                v-model="formDefaultLandingPage" />
-              <button type="button" class="button form-button flat-left" @click="submitDefaultLandingPageChange">
-                {{ $t("buttons.save") }}
-              </button>
-            </div>
           </div>
         </SettingsItem>
-        <SettingsItem :title="$t('profileSettings.sidebarOptions')" :collapsable="true" :start-collapsed="true"
+        <SettingsItem aria-label="sidebarOptions" :title="$t('profileSettings.sidebarOptions')" :collapsable="true" :start-collapsed="true"
           :force-collapsed="isSectionCollapsed('sidebarOptions')" @toggle="handleSectionToggle('sidebarOptions')">
           <div class="settings-items">
             <ToggleSwitch class="item" v-model="localuser.disableQuickToggles" @change="updateSettings"
@@ -73,7 +57,7 @@
               :name="$t('profileSettings.hideSidebarFileActions')" />
           </div>
         </SettingsItem>
-        <SettingsItem :title="$t('settings.searchOptions')" :collapsable="true" :start-collapsed="true"
+        <SettingsItem aria-label="searchOptions" :title="$t('settings.searchOptions')" :collapsable="true" :start-collapsed="true"
           :force-collapsed="isSectionCollapsed('searchOptions')" @toggle="handleSectionToggle('searchOptions')">
           <div class="settings-items">
             <ToggleSwitch class="item" v-model="localuser.disableSearchOptions" @change="updateSettings"
@@ -81,7 +65,7 @@
               :description="$t('profileSettings.disableSearchOptionsDescription')" />
           </div>
         </SettingsItem>
-        <SettingsItem :title="$t('profileSettings.fileViewerOptions')" :collapsable="true" :start-collapsed="true"
+        <SettingsItem aria-label="fileViewerOptions" :title="$t('profileSettings.fileViewerOptions')" :collapsable="true" :start-collapsed="true"
           :force-collapsed="isSectionCollapsed('fileViewerOptions')" @toggle="handleSectionToggle('fileViewerOptions')">
           <div class="settings-items">
             <ToggleSwitch class="item" v-model="localuser.preview.defaultMediaPlayer" @change="updateSettings"
@@ -104,12 +88,12 @@
               </i>
             </div>
             <div class="form-flex-group">
-              <input class="input form-form flat-right"
+              <input class="input form-form flat-right disable-viewing"
                 :class="{ 'form-invalid': !validateExtensions(formDisablePreviews) }" type="text"
-                :placeholder="$t('profileSettings.disableFileExtensions')" id="disablePreviews"
+                :placeholder="$t('profileSettings.disableFileExtensions')"
                 v-model="formDisablePreviews" />
               <button type="button" class="button form-button flat-left" @click="submitDisablePreviewsChange">
-                {{ $t("buttons.save") }}
+                {{ $t("general.save") }}
               </button>
             </div>
           </div>
@@ -123,12 +107,12 @@
               </i>
             </div>
             <div class="form-flex-group">
-              <input class="input form-form flat-right"
+              <input class="input form-form flat-right disable-viewing"
                 :class="{ 'form-invalid': !validateExtensions(formDisabledViewing) }" type="text"
-                :placeholder="$t('profileSettings.disableFileExtensions')" id="disableViewing"
+                :placeholder="$t('profileSettings.disableFileExtensions')"
                 v-model="formDisabledViewing" />
               <button type="button" class="button form-button flat-left" @click="submitDisabledViewingChange">
-                {{ $t("buttons.save") }}
+                {{ $t("general.save") }}
               </button>
             </div>
           </div>
@@ -143,11 +127,11 @@
             </div>
             <div class="form-flex-group">
               <input class="input form-form flat-right"
-                :class="{ 'form-invalid': !validateExtensions(formDisableOfficePreview) }" type="text"
-                :placeholder="$t('profileSettings.disableFileExtensions')" id="disableOfficePreview"
-                v-model="formDisableOfficePreview" />
-              <button type="button" class="button form-button flat-left" @click="submitDisableOfficePreviewChange">
-                {{ $t("buttons.save") }}
+                :class="{ 'form-invalid': !validateExtensions(formDisableOfficeViewing) }" type="text"
+                :placeholder="$t('profileSettings.disableFileExtensions')" id="disableOfficeViewing"
+                v-model="formDisableOfficeViewing" />
+              <button type="button" class="button form-button flat-left" @click="submitDisableOfficeViewingChange">
+                {{ $t("general.save") }}
               </button>
             </div>
             <div class="settings-items">
@@ -175,7 +159,7 @@
             </select>
           </div>
 
-          <h4>{{ $t('settings.language') }}</h4>
+          <h4>{{ $t('general.language') }}</h4>
           <Languages class="input" :locale="localuser.locale" @update:locale="updateLocale"></Languages>
         </SettingsItem>
       </div>
@@ -187,7 +171,7 @@
 <script>
 import { notify } from "@/notify";
 import { globalVars } from "@/utils/constants.js";
-import { state, mutations } from "@/store";
+import { state, mutations, getters } from "@/store";
 import { usersApi } from "@/api";
 import Languages from "@/components/settings/Languages.vue";
 import ButtonGroup from "@/components/ButtonGroup.vue";
@@ -205,10 +189,9 @@ export default {
   data() {
     return {
       localuser: { preview: {}, permissions: {} }, // Initialize localuser with empty objects to avoid undefined errors
-      formDefaultLandingPage: "", // holds temporary input before saving
       formDisablePreviews: "", // holds temporary input before saving
       formDisabledViewing: "", // holds temporary input before saving
-      formDisableOfficePreview: "", // holds temporary input before saving
+      formDisableOfficeViewing: "", // holds temporary input before saving
       expandedSection: 'listingOptions', // Track which section is currently expanded for accordion behavior
     };
   },
@@ -255,10 +238,12 @@ export default {
   },
   mounted() {
     this.localuser = { ...state.user };
-    this.formDefaultLandingPage = this.localuser.defaultLandingPage;
+    if (getters.eventTheme() === "halloween" && !state.disableEventThemes) {
+      this.localuser.themeColor = "";
+    }
     this.formDisablePreviews = this.localuser.disablePreviewExt;
     this.formDisabledViewing = this.localuser.disableViewingExt;
-    this.formDisableOfficePreview = this.localuser.disableOfficePreviewExt;
+    this.formDisableOfficeViewing = this.localuser.disableOnlyOfficeExt;
   },
   methods: {
     showTooltip(event, text) {
@@ -278,10 +263,6 @@ export default {
       const regex = /^\.\w+(?: \.\w+)*$/;
       return regex.test(value);
     },
-    submitDefaultLandingPageChange() {
-      this.localuser.defaultLandingPage = this.formDefaultLandingPage;
-      this.updateSettings();
-    },
     submitDisablePreviewsChange() {
       if (!this.validateExtensions(this.formDisablePreviews)) {
         notify.showError("Invalid input, does not match requirement.");
@@ -298,15 +279,18 @@ export default {
       this.localuser.disableViewingExt = this.formDisabledViewing;
       this.updateSettings();
     },
-    submitDisableOfficePreviewChange() {
-      if (!this.validateExtensions(this.formDisableOfficePreview)) {
+    submitDisableOfficeViewingChange() {
+      if (!this.validateExtensions(this.formDisableOfficeViewing)) {
         notify.showError("Invalid input, does not match requirement.");
         return;
       }
-      this.localuser.disableOfficePreviewExt = this.formDisableOfficePreview;
+      this.localuser.disableOnlyOfficeExt = this.formDisableOfficeViewing;
       this.updateSettings();
     },
     setColor(string) {
+      if (getters.eventTheme() === "halloween" && !state.disableEventThemes) {
+        mutations.disableEventThemes();
+      }
       this.localuser.themeColor = string;
       this.updateSettings();
     },
@@ -331,10 +315,9 @@ export default {
           "themeColor",
           "customTheme",
           "quickDownload",
-          "defaultLandingPage",
           "disablePreviewExt",
           "disableViewingExt",
-          "disableOfficePreviewExt",
+          "disableOnlyOfficeExt",
           "deleteWithoutConfirming",
           "preview",
           "disableQuickToggles",
@@ -347,10 +330,12 @@ export default {
         if (themeChanged) {
           window.location.reload();
         }
-        notify.showSuccess(this.$t("settings.settingsUpdated"));
+        notify.showSuccessToast(
+          this.$t('settings.settingsUpdated')
+        );
 
       } catch (e) {
-        notify.showError(e);
+        console.error(e);
       }
     },
     updateLocale(updatedLocale) {
@@ -373,9 +358,7 @@ export default {
 </script>
 
 <style scoped>
-#disablePreviews,
-#disableViewing,
-#disableOfficePreview {
+.disable-viewing {
   width: 80%;
 }
 

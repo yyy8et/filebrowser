@@ -160,7 +160,7 @@ const docTemplate = `{
                 }
             },
             "delete": {
-                "description": "Delete a user or group from an allow or deny list for a sourcePath and indexPath.",
+                "description": "Delete a user or group from an allow or deny list for a sourcePath and indexPath. When cascade=true, removes the user/group from the specified path and all subpaths.",
                 "consumes": [
                     "application/json"
                 ],
@@ -206,6 +206,12 @@ const docTemplate = `{
                         "name": "value",
                         "in": "query",
                         "required": true
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "Cascade delete to all subpaths (default: false)",
+                        "name": "cascade",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -229,6 +235,70 @@ const docTemplate = `{
                     },
                     "404": {
                         "description": "Not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            },
+            "patch": {
+                "description": "Updates the path for a specific access rule",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Access"
+                ],
+                "summary": "Update access rule path",
+                "parameters": [
+                    {
+                        "description": "Source, old path, and new path",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "newPath": {
+                                    "type": "string"
+                                },
+                                "oldPath": {
+                                    "type": "string"
+                                },
+                                "source": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Rule path updated successfully",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad request - missing or invalid parameters",
                         "schema": {
                             "type": "object",
                             "additionalProperties": {
@@ -396,7 +466,7 @@ const docTemplate = `{
         },
         "/api/auth/login": {
             "post": {
-                "description": "Authenticate a user with a username and password.",
+                "description": "Authenticate a user with a username and password. The password must be URL-encoded and sent in the X-Password header to support special characters (e.g., ^, %, £, €, etc.).",
                 "consumes": [
                     "application/json"
                 ],
@@ -407,6 +477,34 @@ const docTemplate = `{
                     "Auth"
                 ],
                 "summary": "User login",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Username",
+                        "name": "username",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "ReCaptcha response token (if enabled)",
+                        "name": "recaptcha",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "URL-encoded password",
+                        "name": "X-Password",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "TOTP code (if 2FA is enabled)",
+                        "name": "X-Secret",
+                        "in": "header"
+                    }
+                ],
                 "responses": {
                     "200": {
                         "description": "JWT token for authentication",
@@ -540,7 +638,7 @@ const docTemplate = `{
         },
         "/api/auth/otp/generate": {
             "post": {
-                "description": "Generates a new TOTP secret and QR code for the authenticated user.",
+                "description": "Generates a new TOTP secret and QR code for the authenticated user. The password must be URL-encoded and sent in the X-Password header to support special characters.",
                 "consumes": [
                     "application/json"
                 ],
@@ -551,6 +649,22 @@ const docTemplate = `{
                     "OTP"
                 ],
                 "summary": "Generate OTP",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Username",
+                        "name": "username",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "URL-encoded password",
+                        "name": "X-Password",
+                        "in": "header",
+                        "required": true
+                    }
+                ],
                 "responses": {
                     "200": {
                         "description": "OTP secret generated successfully.",
@@ -580,7 +694,7 @@ const docTemplate = `{
         },
         "/api/auth/otp/verify": {
             "post": {
-                "description": "Verifies the provided TOTP code for the authenticated user.",
+                "description": "Verifies the provided TOTP code for the authenticated user. The password must be URL-encoded and sent in the X-Password header to support special characters.",
                 "consumes": [
                     "application/json"
                 ],
@@ -594,9 +708,23 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "TOTP code to verify",
-                        "name": "code",
+                        "description": "Username",
+                        "name": "username",
                         "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "URL-encoded password",
+                        "name": "X-Password",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "TOTP code to verify",
+                        "name": "X-Secret",
+                        "in": "header",
                         "required": true
                     }
                 ],
@@ -637,17 +765,6 @@ const docTemplate = `{
                     "Auth"
                 ],
                 "summary": "User signup",
-                "parameters": [
-                    {
-                        "description": "User signup details",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/http.signupBody"
-                        }
-                    }
-                ],
                 "responses": {
                     "201": {
                         "description": "User created successfully",
@@ -863,6 +980,62 @@ const docTemplate = `{
                     },
                     "500": {
                         "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/duplicates": {
+            "get": {
+                "description": "Finds duplicate files based on size and fuzzy filename matching",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Duplicates"
+                ],
+                "summary": "Find Duplicate Files",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Source name for the desired source",
+                        "name": "source",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "path within user scope to search",
+                        "name": "scope",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Minimum file size in megabytes (default: 1)",
+                        "name": "minSizeMb",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "List of duplicate file groups",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/http.duplicateGroup"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
                         "schema": {
                             "type": "object",
                             "additionalProperties": {
@@ -1099,11 +1272,8 @@ const docTemplate = `{
         },
         "/api/raw": {
             "get": {
-                "description": "Returns the raw content of a file, multiple files, or a directory. Supports downloading files as archives in various formats.",
+                "description": "Returns the raw content of a file, multiple files, or a directory. Supports downloading files as archives in various formats.\n\n**Filename Encoding:**\n- The Content-Disposition header will always include both:\n1. ` + "`" + `filename=\"...\"` + "`" + `: An ASCII-safe version of the filename for compatibility.\n2. ` + "`" + `filename*=utf-8”...` + "`" + `: The full UTF-8 encoded filename (RFC 6266/5987) for modern clients.",
                 "consumes": [
-                    "application/json"
-                ],
-                "produces": [
                     "application/json"
                 ],
                 "tags": [
@@ -1387,6 +1557,12 @@ const docTemplate = `{
                         "type": "boolean",
                         "description": "Override existing file if true",
                         "name": "override",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "Explicitly specify if the resource is a directory",
+                        "name": "isDir",
                         "in": "query"
                     }
                 ],
@@ -1813,6 +1989,64 @@ const docTemplate = `{
                         }
                     }
                 }
+            },
+            "patch": {
+                "description": "Updates the path for a specific share link identified by hash",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Shares"
+                ],
+                "summary": "Update share link path",
+                "parameters": [
+                    {
+                        "description": "Hash and new path",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "hash": {
+                                    "type": "string"
+                                },
+                                "path": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Updated share link",
+                        "schema": {
+                            "$ref": "#/definitions/http.ShareResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad request - missing or invalid parameters",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
             }
         },
         "/api/share/direct": {
@@ -2041,9 +2275,6 @@ const docTemplate = `{
                 "consumes": [
                     "application/json"
                 ],
-                "produces": [
-                    "application/json"
-                ],
                 "tags": [
                     "Users"
                 ],
@@ -2072,11 +2303,8 @@ const docTemplate = `{
                     }
                 ],
                 "responses": {
-                    "200": {
-                        "description": "Updated user details",
-                        "schema": {
-                            "$ref": "#/definitions/users.User"
-                        }
+                    "204": {
+                        "description": "No Content - User updated successfully"
                     },
                     "400": {
                         "description": "Bad Request",
@@ -2404,6 +2632,78 @@ const docTemplate = `{
             }
         },
         "/public/api/resources": {
+            "get": {
+                "description": "Returns metadata for files or directories accessible via a public share link. Browsing is disabled for upload-only shares.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Public Shares"
+                ],
+                "summary": "Get file/directory information from a public share",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Share hash for authentication",
+                        "name": "hash",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Path within the share to retrieve information for. Defaults to share root.",
+                        "name": "path",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "File or directory metadata",
+                        "schema": {
+                            "$ref": "#/definitions/iteminfo.FileInfo"
+                        }
+                    },
+                    "403": {
+                        "description": "Share unavailable or access denied",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Share not found or file not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "501": {
+                        "description": "Browsing disabled for upload shares",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            },
             "put": {
                 "description": "Updates the content of a file in a public share.",
                 "consumes": [
@@ -2603,9 +2903,9 @@ const docTemplate = `{
                 }
             }
         },
-        "/public/api/share": {
+        "/public/api/shareinfo": {
             "get": {
-                "description": "Returns metadata for files or directories accessible via a public share link. Browsing is disabled for upload-only shares.",
+                "description": "Returns information about a share link based on its hash. This endpoint is publicly accessible and can be used with or without authentication.",
                 "consumes": [
                     "application/json"
                 ],
@@ -2613,60 +2913,27 @@ const docTemplate = `{
                     "application/json"
                 ],
                 "tags": [
-                    "Public Shares"
+                    "Shares"
                 ],
-                "summary": "Get file/directory information from a public share",
+                "summary": "Get share information by hash",
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Share hash for authentication",
+                        "description": "Hash of the share link",
                         "name": "hash",
                         "in": "query",
                         "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Path within the share to retrieve information for. Defaults to share root.",
-                        "name": "path",
-                        "in": "query"
                     }
                 ],
                 "responses": {
                     "200": {
-                        "description": "File or directory metadata",
+                        "description": "Share information",
                         "schema": {
-                            "$ref": "#/definitions/iteminfo.FileInfo"
-                        }
-                    },
-                    "403": {
-                        "description": "Share unavailable or access denied",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": {
-                                "type": "string"
-                            }
+                            "$ref": "#/definitions/share.CommonShare"
                         }
                     },
                     "404": {
-                        "description": "Share not found or file not found",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": {
-                                "type": "string"
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal server error",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": {
-                                "type": "string"
-                            }
-                        }
-                    },
-                    "501": {
-                        "description": "Browsing disabled for upload shares",
+                        "description": "Share hash not found",
                         "schema": {
                             "type": "object",
                             "additionalProperties": {
@@ -2694,6 +2961,9 @@ const docTemplate = `{
                 "key": {
                     "type": "string"
                 },
+                "minimal": {
+                    "type": "boolean"
+                },
                 "name": {
                     "type": "string"
                 }
@@ -2703,6 +2973,9 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "hash": {
+                    "type": "string"
+                },
+                "shareUrl": {
                     "type": "string"
                 },
                 "status": {
@@ -2738,14 +3011,179 @@ const docTemplate = `{
                 }
             }
         },
-        "http.signupBody": {
+        "http.ShareResponse": {
             "type": "object",
             "properties": {
-                "password": {
+                "allowCreate": {
+                    "description": "allow creating files",
+                    "type": "boolean"
+                },
+                "allowDelete": {
+                    "type": "boolean"
+                },
+                "allowModify": {
+                    "description": "allow modifying files",
+                    "type": "boolean"
+                },
+                "allowReplacements": {
+                    "description": "allow replacements of files",
+                    "type": "boolean"
+                },
+                "allowedUsernames": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "banner": {
                     "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "disableAnonymous": {
+                    "type": "boolean"
+                },
+                "disableDownload": {
+                    "description": "don't allow downloading files",
+                    "type": "boolean"
+                },
+                "disableFileViewer": {
+                    "description": "don't allow viewing files",
+                    "type": "boolean"
+                },
+                "disableShareCard": {
+                    "type": "boolean"
+                },
+                "disableSidebar": {
+                    "type": "boolean"
+                },
+                "disableThumbnails": {
+                    "type": "boolean"
+                },
+                "downloadURL": {
+                    "type": "string"
+                },
+                "downloads": {
+                    "type": "integer"
+                },
+                "downloadsLimit": {
+                    "type": "integer"
+                },
+                "enableOnlyOffice": {
+                    "type": "boolean"
+                },
+                "enforceDarkLightMode": {
+                    "description": "\"dark\" or \"light\"",
+                    "type": "string"
+                },
+                "expire": {
+                    "type": "integer"
+                },
+                "extractEmbeddedSubtitles": {
+                    "description": "can be io intensive for large files and take 10-30 seconds.",
+                    "type": "boolean"
+                },
+                "favicon": {
+                    "type": "string"
+                },
+                "hasPassword": {
+                    "type": "boolean"
+                },
+                "hash": {
+                    "type": "string"
+                },
+                "hideNavButtons": {
+                    "type": "boolean"
+                },
+                "keepAfterExpiration": {
+                    "type": "boolean"
+                },
+                "maxBandwidth": {
+                    "type": "integer"
+                },
+                "password_hash": {
+                    "type": "string"
+                },
+                "path": {
+                    "type": "string"
+                },
+                "pathExists": {
+                    "type": "boolean"
+                },
+                "perUserDownloadLimit": {
+                    "type": "boolean"
+                },
+                "quickDownload": {
+                    "type": "boolean"
+                },
+                "shareTheme": {
+                    "type": "string"
+                },
+                "shareType": {
+                    "description": "type of share: normal, upload, max",
+                    "type": "string"
+                },
+                "shareURL": {
+                    "type": "string"
+                },
+                "sidebarLinks": {
+                    "description": "customizable sidebar links",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/users.SidebarLink"
+                    }
+                },
+                "source": {
+                    "description": "Override embedded field to show source name",
+                    "type": "string"
+                },
+                "themeColor": {
+                    "type": "string"
+                },
+                "title": {
+                    "type": "string"
+                },
+                "token": {
+                    "description": "Token is a random value that will only be set when PasswordHash is set. It is\nURL-Safe and is used to download links in password-protected shares via a\nquery arg.",
+                    "type": "string"
+                },
+                "userDownloads": {
+                    "description": "Track downloads per username",
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "integer"
+                    }
+                },
+                "userID": {
+                    "type": "integer"
                 },
                 "username": {
                     "type": "string"
+                },
+                "version": {
+                    "type": "integer"
+                },
+                "viewMode": {
+                    "description": "default view mode for anonymous users: \"list\", \"compact\", \"normal\", \"gallery\"",
+                    "type": "string"
+                }
+            }
+        },
+        "http.duplicateGroup": {
+            "type": "object",
+            "properties": {
+                "count": {
+                    "type": "integer"
+                },
+                "files": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/indexing.SearchResult"
+                    }
+                },
+                "size": {
+                    "type": "integer"
                 }
             }
         },
@@ -2765,8 +3203,9 @@ const docTemplate = `{
         "indexing.ReducedIndex": {
             "type": "object",
             "properties": {
-                "assessment": {
-                    "type": "string"
+                "complexity": {
+                    "description": "0-10 scale: 0=unknown, 1=simple, 2-6=normal, 7-9=complex, 10=highlyComplex",
+                    "type": "integer"
                 },
                 "fullScanDurationSeconds": {
                     "type": "integer"
@@ -2789,6 +3228,12 @@ const docTemplate = `{
                 "quickScanDurationSeconds": {
                     "type": "integer"
                 },
+                "scanners": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/indexing.ScannerInfo"
+                    }
+                },
                 "status": {
                     "$ref": "#/definitions/indexing.IndexStatus"
                 },
@@ -2800,9 +3245,48 @@ const docTemplate = `{
                 }
             }
         },
+        "indexing.ScannerInfo": {
+            "type": "object",
+            "properties": {
+                "complexity": {
+                    "description": "0-10 scale: 0=unknown, 1=simple, 2-6=normal, 7-9=complex, 10=highlyComplex",
+                    "type": "integer"
+                },
+                "currentSchedule": {
+                    "type": "integer"
+                },
+                "fullScanTime": {
+                    "type": "integer"
+                },
+                "isRoot": {
+                    "type": "boolean"
+                },
+                "lastScanned": {
+                    "type": "string"
+                },
+                "numDirs": {
+                    "type": "integer"
+                },
+                "numFiles": {
+                    "type": "integer"
+                },
+                "path": {
+                    "type": "string"
+                },
+                "quickScanTime": {
+                    "type": "integer"
+                }
+            }
+        },
         "indexing.SearchResult": {
             "type": "object",
             "properties": {
+                "hasPreview": {
+                    "type": "boolean"
+                },
+                "modified": {
+                    "type": "string"
+                },
                 "path": {
                     "type": "string"
                 },
@@ -2814,14 +3298,51 @@ const docTemplate = `{
                 }
             }
         },
+        "iteminfo.ExtendedItemInfo": {
+            "type": "object",
+            "properties": {
+                "hasPreview": {
+                    "description": "whether the file has a thumbnail preview",
+                    "type": "boolean"
+                },
+                "hidden": {
+                    "description": "whether the file is hidden",
+                    "type": "boolean"
+                },
+                "metadata": {
+                    "description": "optional media metadata (audio/video only)",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/iteminfo.MediaMetadata"
+                        }
+                    ]
+                },
+                "modified": {
+                    "description": "modification time",
+                    "type": "string"
+                },
+                "name": {
+                    "description": "name of the file",
+                    "type": "string"
+                },
+                "size": {
+                    "description": "length in bytes for regular files",
+                    "type": "integer"
+                },
+                "type": {
+                    "description": "type of the file, either \"directory\" or a file mimetype",
+                    "type": "string"
+                }
+            }
+        },
         "iteminfo.FileInfo": {
             "type": "object",
             "properties": {
                 "files": {
-                    "description": "files in the directory",
+                    "description": "files in the directory with optional metadata",
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/iteminfo.ItemInfo"
+                        "$ref": "#/definitions/iteminfo.ExtendedItemInfo"
                     }
                 },
                 "folders": {
@@ -2890,6 +3411,43 @@ const docTemplate = `{
                 }
             }
         },
+        "iteminfo.MediaMetadata": {
+            "type": "object",
+            "properties": {
+                "album": {
+                    "description": "album name",
+                    "type": "string"
+                },
+                "albumArt": {
+                    "description": "base64 encoded album art / video thumbnail",
+                    "type": "string"
+                },
+                "artist": {
+                    "description": "track artist",
+                    "type": "string"
+                },
+                "duration": {
+                    "description": "duration in seconds",
+                    "type": "integer"
+                },
+                "genre": {
+                    "description": "music/video genre",
+                    "type": "string"
+                },
+                "title": {
+                    "description": "track/video title",
+                    "type": "string"
+                },
+                "track": {
+                    "description": "track number",
+                    "type": "integer"
+                },
+                "year": {
+                    "description": "release year",
+                    "type": "integer"
+                }
+            }
+        },
         "settings.Auth": {
             "type": "object",
             "properties": {
@@ -2922,6 +3480,10 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "hidden": {
+                    "description": "deprecated: use ignoreHidden instead to exclude hidden files and folders.",
+                    "type": "boolean"
+                },
+                "ignoreHidden": {
                     "description": "exclude hidden files and folders.",
                     "type": "boolean"
                 },
@@ -2945,8 +3507,12 @@ const docTemplate = `{
                     "description": "(global) exclude files that end with these suffixes. Eg. \".jpg\" or \".txt\"",
                     "type": "string"
                 },
-                "fileNames": {
+                "fileName": {
                     "description": "(global) exclude files that match these names. Eg. \"file.txt\" or \"test.csv\"",
+                    "type": "string"
+                },
+                "fileNames": {
+                    "description": "deprecated: exclude files that match these names. Eg. \"file.txt\" or \"test.csv\"",
                     "type": "string"
                 },
                 "filePath": {
@@ -2961,8 +3527,12 @@ const docTemplate = `{
                     "description": "(global) exclude folders that end with these suffixes. Eg. \".thumbnails\" or \".git\"",
                     "type": "string"
                 },
-                "folderNames": {
+                "folderName": {
                     "description": "(global) exclude folders that match these names. Eg. \"folder\" or \"subfolder\"",
+                    "type": "string"
+                },
+                "folderNames": {
+                    "description": "deprecated: exclude folders that match these names. Eg. \"folder\" or \"subfolder\"",
                     "type": "string"
                 },
                 "folderPath": {
@@ -3084,6 +3654,10 @@ const docTemplate = `{
                 },
                 "favicon": {
                     "description": "path to a favicon to use for the frontend",
+                    "type": "string"
+                },
+                "loginIcon": {
+                    "description": "path to an image file for the login page icon",
                     "type": "string"
                 },
                 "name": {
@@ -3333,6 +3907,10 @@ const docTemplate = `{
                     "description": "path to the cache directory, used for thumbnails and other cached files",
                     "type": "string"
                 },
+                "cacheDirCleanup": {
+                    "description": "whether to automatically cleanup the cache directory. Note: docker must also mount a persistent volume to persist the cache (default: true)",
+                    "type": "boolean"
+                },
                 "database": {
                     "description": "path to the database file",
                     "type": "string"
@@ -3367,6 +3945,10 @@ const docTemplate = `{
                 },
                 "internalUrl": {
                     "description": "used by integrations if set, this is the base domain that an integration service will use to communicate with filebrowser (eg. http://localhost:8080)",
+                    "type": "string"
+                },
+                "listen": {
+                    "description": "address to listen on (default: 0.0.0.0)",
                     "type": "string"
                 },
                 "logging": {
@@ -3462,7 +4044,7 @@ const docTemplate = `{
                     ]
                 },
                 "createUserDir": {
-                    "description": "create a user directory for each user",
+                    "description": "create a user directory for each user under defaultUserScope + username",
                     "type": "boolean"
                 },
                 "defaultEnabled": {
@@ -3470,7 +4052,7 @@ const docTemplate = `{
                     "type": "boolean"
                 },
                 "defaultUserScope": {
-                    "description": "default \"/\" should match folders under path",
+                    "description": "defaults to root of index \"/\" should match folders under path",
                     "type": "string"
                 },
                 "denyByDefault": {
@@ -3478,7 +4060,7 @@ const docTemplate = `{
                     "type": "boolean"
                 },
                 "disableIndexing": {
-                    "description": "disable the indexing of this source",
+                    "description": "(optional) not recommended: disable the indexing of this source",
                     "type": "boolean"
                 },
                 "disabled": {
@@ -3486,7 +4068,7 @@ const docTemplate = `{
                     "type": "boolean"
                 },
                 "indexingIntervalMinutes": {
-                    "description": "optional manual overide interval in minutes to re-index the source",
+                    "description": "(optional) not recommended: manual overide interval in minutes to re-index the source",
                     "type": "integer"
                 },
                 "private": {
@@ -3512,6 +4094,10 @@ const docTemplate = `{
                 "darkBackground": {
                     "description": "Specify a valid CSS color property value to use as the background color in dark mode",
                     "type": "string"
+                },
+                "disableEventThemes": {
+                    "description": "disable the event based themes,",
+                    "type": "boolean"
                 },
                 "lightBackground": {
                     "description": "specify a valid CSS color property value to use as the background color in light mode",
@@ -3539,7 +4125,7 @@ const docTemplate = `{
                     "type": "boolean"
                 },
                 "defaultLandingPage": {
-                    "description": "default landing page to use if no redirect is specified: eg. /files/mysource/mysubpath, /settings, etc.",
+                    "description": "deprecated: determined by sidebar link order since 1.1.0",
                     "type": "string"
                 },
                 "deleteWithoutConfirming": {
@@ -3611,10 +4197,10 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "permissions": {
-                    "$ref": "#/definitions/users.Permissions"
+                    "$ref": "#/definitions/settings.UserDefaultsPermissions"
                 },
                 "preview": {
-                    "$ref": "#/definitions/users.Preview"
+                    "$ref": "#/definitions/settings.UserDefaultsPreview"
                 },
                 "quickDownload": {
                     "description": "show icon to download in one click",
@@ -3642,6 +4228,212 @@ const docTemplate = `{
                 },
                 "viewMode": {
                     "description": "view mode to use: eg. normal, list, grid, or compact",
+                    "type": "string"
+                }
+            }
+        },
+        "settings.UserDefaultsPermissions": {
+            "type": "object",
+            "properties": {
+                "admin": {
+                    "description": "allow admin access",
+                    "type": "boolean"
+                },
+                "api": {
+                    "description": "allow api access",
+                    "type": "boolean"
+                },
+                "create": {
+                    "description": "allow creating or uploading files",
+                    "type": "boolean"
+                },
+                "delete": {
+                    "description": "allow deleting files",
+                    "type": "boolean"
+                },
+                "download": {
+                    "description": "allow downloading files",
+                    "type": "boolean"
+                },
+                "modify": {
+                    "description": "allow modifying files",
+                    "type": "boolean"
+                },
+                "realtime": {
+                    "description": "allow realtime updates",
+                    "type": "boolean"
+                },
+                "share": {
+                    "description": "allow sharing files",
+                    "type": "boolean"
+                }
+            }
+        },
+        "settings.UserDefaultsPreview": {
+            "type": "object",
+            "properties": {
+                "autoplayMedia": {
+                    "description": "autoplay media files in preview",
+                    "type": "boolean"
+                },
+                "defaultMediaPlayer": {
+                    "description": "disable the styled feature-rich media player for browser default",
+                    "type": "boolean"
+                },
+                "disableHideSidebar": {
+                    "description": "keep sidebar open when previewing files",
+                    "type": "boolean"
+                },
+                "folder": {
+                    "description": "show thumbnails for folders that have previewable contents",
+                    "type": "boolean"
+                },
+                "highQuality": {
+                    "description": "use high quality thumbnails",
+                    "type": "boolean"
+                },
+                "image": {
+                    "description": "show thumbnails for image files",
+                    "type": "boolean"
+                },
+                "motionVideoPreview": {
+                    "description": "show multiple frames for videos in thumbnail preview when hovering",
+                    "type": "boolean"
+                },
+                "office": {
+                    "description": "show thumbnails for office files",
+                    "type": "boolean"
+                },
+                "popup": {
+                    "description": "show larger popup preview when hovering over thumbnail",
+                    "type": "boolean"
+                },
+                "video": {
+                    "description": "show thumbnails for video files",
+                    "type": "boolean"
+                }
+            }
+        },
+        "share.CommonShare": {
+            "type": "object",
+            "properties": {
+                "allowCreate": {
+                    "description": "allow creating files",
+                    "type": "boolean"
+                },
+                "allowDelete": {
+                    "type": "boolean"
+                },
+                "allowModify": {
+                    "description": "allow modifying files",
+                    "type": "boolean"
+                },
+                "allowReplacements": {
+                    "description": "allow replacements of files",
+                    "type": "boolean"
+                },
+                "allowedUsernames": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "banner": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "disableAnonymous": {
+                    "type": "boolean"
+                },
+                "disableDownload": {
+                    "description": "don't allow downloading files",
+                    "type": "boolean"
+                },
+                "disableFileViewer": {
+                    "description": "don't allow viewing files",
+                    "type": "boolean"
+                },
+                "disableShareCard": {
+                    "type": "boolean"
+                },
+                "disableSidebar": {
+                    "type": "boolean"
+                },
+                "disableThumbnails": {
+                    "type": "boolean"
+                },
+                "downloadURL": {
+                    "type": "string"
+                },
+                "downloadsLimit": {
+                    "type": "integer"
+                },
+                "enableOnlyOffice": {
+                    "type": "boolean"
+                },
+                "enforceDarkLightMode": {
+                    "description": "\"dark\" or \"light\"",
+                    "type": "string"
+                },
+                "extractEmbeddedSubtitles": {
+                    "description": "can be io intensive for large files and take 10-30 seconds.",
+                    "type": "boolean"
+                },
+                "favicon": {
+                    "type": "string"
+                },
+                "hasPassword": {
+                    "type": "boolean"
+                },
+                "hideNavButtons": {
+                    "type": "boolean"
+                },
+                "keepAfterExpiration": {
+                    "type": "boolean"
+                },
+                "maxBandwidth": {
+                    "type": "integer"
+                },
+                "path": {
+                    "type": "string"
+                },
+                "perUserDownloadLimit": {
+                    "type": "boolean"
+                },
+                "quickDownload": {
+                    "type": "boolean"
+                },
+                "shareTheme": {
+                    "type": "string"
+                },
+                "shareType": {
+                    "description": "type of share: normal, upload, max",
+                    "type": "string"
+                },
+                "shareURL": {
+                    "type": "string"
+                },
+                "sidebarLinks": {
+                    "description": "customizable sidebar links",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/users.SidebarLink"
+                    }
+                },
+                "source": {
+                    "description": "backend source is path to maintain between name changes",
+                    "type": "string"
+                },
+                "themeColor": {
+                    "type": "string"
+                },
+                "title": {
+                    "type": "string"
+                },
+                "viewMode": {
+                    "description": "default view mode for anonymous users: \"list\", \"compact\", \"normal\", \"gallery\"",
                     "type": "string"
                 }
             }
@@ -3705,9 +4497,6 @@ const docTemplate = `{
                 "enableOnlyOffice": {
                     "type": "boolean"
                 },
-                "enableOnlyOfficeEditing": {
-                    "type": "boolean"
-                },
                 "enforceDarkLightMode": {
                     "description": "\"dark\" or \"light\"",
                     "type": "string"
@@ -3721,6 +4510,9 @@ const docTemplate = `{
                 },
                 "favicon": {
                     "type": "string"
+                },
+                "hasPassword": {
+                    "type": "boolean"
                 },
                 "hash": {
                     "type": "string"
@@ -3752,6 +4544,16 @@ const docTemplate = `{
                 "shareType": {
                     "description": "type of share: normal, upload, max",
                     "type": "string"
+                },
+                "shareURL": {
+                    "type": "string"
+                },
+                "sidebarLinks": {
+                    "description": "customizable sidebar links",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/users.SidebarLink"
+                    }
                 },
                 "source": {
                     "description": "backend source is path to maintain between name changes",
@@ -3834,9 +4636,6 @@ const docTemplate = `{
                 "enableOnlyOffice": {
                     "type": "boolean"
                 },
-                "enableOnlyOfficeEditing": {
-                    "type": "boolean"
-                },
                 "enforceDarkLightMode": {
                     "description": "\"dark\" or \"light\"",
                     "type": "string"
@@ -3850,6 +4649,9 @@ const docTemplate = `{
                 },
                 "favicon": {
                     "type": "string"
+                },
+                "hasPassword": {
+                    "type": "boolean"
                 },
                 "hash": {
                     "type": "string"
@@ -3882,6 +4684,16 @@ const docTemplate = `{
                     "description": "type of share: normal, upload, max",
                     "type": "string"
                 },
+                "shareURL": {
+                    "type": "string"
+                },
+                "sidebarLinks": {
+                    "description": "customizable sidebar links",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/users.SidebarLink"
+                    }
+                },
                 "source": {
                     "description": "backend source is path to maintain between name changes",
                     "type": "string"
@@ -3896,7 +4708,17 @@ const docTemplate = `{
                     "description": "Token is a random value that will only be set when PasswordHash is set. It is\nURL-Safe and is used to download links in password-protected shares via a\nquery arg.",
                     "type": "string"
                 },
+                "userDownloads": {
+                    "description": "Track downloads per username",
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "integer"
+                    }
+                },
                 "userID": {
+                    "type": "integer"
+                },
+                "version": {
                     "type": "integer"
                 },
                 "viewMode": {
@@ -3912,12 +4734,6 @@ const docTemplate = `{
                     "$ref": "#/definitions/users.Permissions"
                 },
                 "belongsTo": {
-                    "type": "integer"
-                },
-                "createdAt": {
-                    "type": "integer"
-                },
-                "expiresAt": {
                     "type": "integer"
                 },
                 "key": {
@@ -4037,6 +4853,31 @@ const docTemplate = `{
                 }
             }
         },
+        "users.SidebarLink": {
+            "type": "object",
+            "properties": {
+                "category": {
+                    "description": "Category type: \"source\", \"share\", \"tool\", \"custom\", etc.",
+                    "type": "string"
+                },
+                "icon": {
+                    "description": "Material icon name",
+                    "type": "string"
+                },
+                "name": {
+                    "description": "Display name of the link",
+                    "type": "string"
+                },
+                "sourceName": {
+                    "description": "Source identifier for source-type links",
+                    "type": "string"
+                },
+                "target": {
+                    "description": "Target path/URL for the link (relative for source/share)",
+                    "type": "string"
+                }
+            }
+        },
         "users.Sorting": {
             "type": "object",
             "properties": {
@@ -4085,7 +4926,7 @@ const docTemplate = `{
                     "type": "boolean"
                 },
                 "defaultLandingPage": {
-                    "description": "default landing page to use: eg. /files/mysource/mysubpath, /settings, etc.",
+                    "description": "deprecated: determined by sidebar link order instead",
                     "type": "string"
                 },
                 "deleteWithoutConfirming": {
@@ -4190,6 +5031,9 @@ const docTemplate = `{
                         "$ref": "#/definitions/users.SourceScope"
                     }
                 },
+                "showFirstLogin": {
+                    "type": "boolean"
+                },
                 "showHidden": {
                     "description": "show hidden files in the UI. On windows this includes files starting with a dot and windows hidden files",
                     "type": "boolean"
@@ -4197,6 +5041,13 @@ const docTemplate = `{
                 "showSelectMultiple": {
                     "description": "show select multiple files on desktop",
                     "type": "boolean"
+                },
+                "sidebarLinks": {
+                    "description": "customizable sidebar links",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/users.SidebarLink"
+                    }
                 },
                 "singleClick": {
                     "description": "open directory on single click, also enables middle click to open in new tab",

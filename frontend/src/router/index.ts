@@ -4,28 +4,29 @@ import Layout from "@/views/Layout.vue";
 import Files from "@/views/Files.vue";
 import Settings from "@/views/Settings.vue";
 import Errors from "@/views/Errors.vue";
+import Tools from "@/views/Tools.vue";
 import { globalVars } from "@/utils/constants";
 import { getters, state } from "@/store";
 import { mutations } from "@/store";
 import { validateLogin } from "@/utils/auth";
-import { removeLeadingSlash } from "@/utils/url";
 import i18n from "@/i18n";
 
 const titles = {
-  Login: "sidebar.login",
-  Share: "buttons.share",
-  PublicShare: "buttons.share",
-  Files: "general.files",
-  Settings: "sidebar.settings",
-  ProfileSettings: "settings.profileSettings",
-  Shares: "settings.shareManagement",
-  GlobalSettings: "settings.globalSettings",
-  Users: "settings.users",
-  User: "settings.user",
-  Forbidden: "errors.forbidden",
-  NotFound: "errors.notFound",
-  ShareNotFound: "errors.shareNotFound",
-  InternalServerError: "errors.internal",
+  Login: i18n.global.t("general.login"),
+  Share: i18n.global.t("general.share"),
+  PublicShare: i18n.global.t("general.share"),
+  Files: i18n.global.t("general.files"),
+  Tools: i18n.global.t("general.tool"),
+  Settings: i18n.global.t("general.settings"),
+  ProfileSettings: i18n.global.t("settings.profileSettings"),
+  Shares: i18n.global.t("settings.shareManagement"),
+  GlobalSettings: i18n.global.t("settings.globalSettings"),
+  Users: i18n.global.t("general.users"),
+  User: i18n.global.t("general.user"),
+  Forbidden: i18n.global.t("errors.forbidden"),
+  NotFound: i18n.global.t("errors.notFound"),
+  ShareNotFound: i18n.global.t("errors.shareNotFound"),
+  InternalServerError: i18n.global.t("errors.internal"),
 };
 
 const routes: RouteRecordRaw[] = [
@@ -70,6 +71,21 @@ const routes: RouteRecordRaw[] = [
         path: ":path*",
         name: "Files",
         component: Files,
+      },
+    ],
+  },
+  {
+    path: "/tools/:toolName?",
+    name: "Tools",
+    component: Layout,
+    meta: {
+      requiresAuth: true,
+    },
+    children: [
+      {
+        path: "",
+        name: "ToolsIndex",
+        component: Tools,
       },
     ],
   },
@@ -138,7 +154,13 @@ const router = createRouter({
 
 // Helper function to check if a route resolves to itself
 function isSameRoute(to: RouteLocation, from: RouteLocation) {
-  return to.path === from.path && to.hash === from.hash;
+  // Allow query parameter changes - they don't count as same route
+  const toQuery = JSON.stringify(to.query || {});
+  const fromQuery = JSON.stringify(from.query || {});
+
+  return to.path === from.path &&
+    to.hash === from.hash &&
+    toQuery === fromQuery;
 }
 
 router.beforeResolve(async (to, from, next) => {
@@ -147,8 +169,7 @@ router.beforeResolve(async (to, from, next) => {
     return next(false);
   }
 
-  // @ts-ignore - Temporary fix for type instantiation issue
-  const title = i18n.global.t(titles[to.name as keyof typeof titles]);
+  const title = titles[to.name as keyof typeof titles] || String(to.name || '');
   document.title = globalVars.name + " - " + title;
   mutations.setRoute(to);
 
@@ -169,19 +190,11 @@ router.beforeResolve(async (to, from, next) => {
     if (getters.isLoggedIn() || to.matched.some((record) => record.meta.optionalAuth)) {
       // do nothing
     } else {
-      // Validation failed - clear state
+      // Validation failed - clear state and redirect to login
       mutations.setCurrentUser(null);
-      mutations.setJWT("");
-      if (globalVars.passwordAvailable) {
-        next({ path: "/login", query: { redirect: to.fullPath } });
-        return;
-      }
-
-      if (globalVars.oidcAvailable) {
-        const modifiedPath = encodeURIComponent(globalVars.baseURL+removeLeadingSlash(to.fullPath))
-        window.location.href = globalVars.baseURL+`api/auth/oidc/login?redirect=${modifiedPath}`;
-        return;
-      }
+      // Always redirect to login when not authenticated
+      next({ path: "/login", query: { redirect: to.fullPath } });
+      return;
     }
 
     if (to.matched.some((record) => record.meta.requiresAdmin)) {

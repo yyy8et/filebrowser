@@ -17,7 +17,7 @@
       <span>{{ $t("files.lonely") }}</span>
     </h2>
     <div v-if="user.loginMethod == 'password' && globalVars.passwordAvailable && !isNew">
-      <label for="password">{{ $t("settings.password") }}</label>
+      <label for="password">{{ $t("general.password") }}</label>
       <div class="form-flex-group">
         <input
           class="input form-form"
@@ -46,7 +46,7 @@
           class="button form-button flat-left"
           @click="submitUpdatePassword"
         >
-          {{ $t("buttons.update") }}
+          {{ $t("general.update") }}
         </button>
       </div>
       <div
@@ -63,7 +63,7 @@
     </div>
     <div v-if="stateUser.permissions.admin">
       <p v-if="isNew">
-        <label for="username">{{ $t("settings.username") }}</label>
+        <label for="username">{{ $t("general.username") }}</label>
         <input
           class="input"
           type="text"
@@ -74,7 +74,7 @@
       </p>
 
       <div v-if="user.loginMethod == 'password' && globalVars.passwordAvailable && isNew">
-        <label for="password">{{ $t("settings.password") }}</label>
+        <label for="password">{{ $t("general.password") }}</label>
         <div class="form-flex-group">
           <input
             class="input form-form"
@@ -102,7 +102,7 @@
             class="button form-button flat-left"
             @click="submitUpdatePassword"
           >
-            {{ $t("buttons.update") }}
+            {{ $t("general.update") }}
           </button>
         </div>
       </div>
@@ -169,7 +169,7 @@
       </div>
 
       <p v-if="stateUser.username !== user.username">
-        <label for="locale">{{ $t("settings.language") }}</label>
+        <label for="locale">{{ $t("general.language") }}</label>
         <languages
           class="input"
           id="locale"
@@ -190,16 +190,16 @@
   </div>
 
   <div class="card-action">
-    <button class="button button--flat button--grey" @click="closeHovers" :aria-label="$t('buttons.cancel')"
-      :title="$t('buttons.cancel')">
-      {{ $t("buttons.cancel") }}
+    <button class="button button--flat button--grey" @click="closeHovers" :aria-label="$t('general.cancel')"
+      :title="$t('general.cancel')">
+      {{ $t("general.cancel") }}
     </button>
     <button v-if="!isNew" @click.prevent="deletePrompt" type="button" class="button button--flat button--red"
-      aria-label="Delete User" :title="$t('buttons.delete')">
-      {{ $t("buttons.delete") }}
+      aria-label="Delete User" :title="$t('general.delete')">
+      {{ $t("general.delete") }}
     </button>
-    <button @click="save" class="button button--flat" :aria-label="$t('buttons.save')" :title="$t('buttons.save')">
-      {{ $t("buttons.save") }}
+    <button @click="save" class="button button--flat" :aria-label="$t('general.save')" :title="$t('general.save')">
+      {{ $t("general.save") }}
     </button>
   </div>
 </template>
@@ -341,6 +341,21 @@ export default {
           }
           this.user = { ...(await usersApi.get(id)) };
           this.user.password = "";
+          // Normalize scopes to ensure they're in {name, scope} format only
+          if (this.user.scopes && Array.isArray(this.user.scopes)) {
+            this.user.scopes = this.user.scopes.map(scope => {
+              // If it's already in the correct format, use it
+              if (scope.name !== undefined && scope.scope !== undefined) {
+                return { name: scope.name, scope: scope.scope || "" };
+              }
+              // If it's a full source object, extract just name and scope
+              if (scope.name && typeof scope.name === 'string') {
+                return { name: scope.name, scope: scope.scope || "" };
+              }
+              // Fallback: try to extract from any object structure
+              return { name: "", scope: "" };
+            });
+          }
           // Ensure loginMethod is valid, set to first available method if not set or invalid
           const validMethods = [];
           if (this.globalVars.passwordAvailable) validMethods.push("password");
@@ -352,7 +367,6 @@ export default {
           }
         }
       } catch (e) {
-        notify.showError(e);
         this.error = e;
       } finally {
         mutations.setLoading("users", false);
@@ -377,7 +391,11 @@ export default {
       if (this.isNew && this.availableSources.length) {
         const newSource = this.availableSources.shift();
         if (newSource) {
-          this.selectedSources.push(newSource);
+          // Only store {name, scope} format, not the full source config
+          this.selectedSources.push({ 
+            name: newSource.name || "", 
+            scope: "" // Empty scope - backend will handle defaults
+          });
           this.emitUserUpdate();
         }
       }
@@ -389,27 +407,34 @@ export default {
       event.preventDefault();
       try {
         let fields = ["all"];
+        // Transform selectedSources to only include {name, scope} format
+        // Empty scope strings should be passed as "" for backend to handle defaults
+        const scopesToSend = this.selectedSources.map(source => ({
+          name: source.name || "",
+          scope: source.scope || ""
+        }));
+        
         if (this.isNew) {
           if (!state.user.permissions.admin) {
             notify.showError(this.$t("settings.userNotAdmin"));
             return;
           }
-          await usersApi.create({ ...this.user, scopes: this.selectedSources });
+          await usersApi.create({ ...this.user, scopes: scopesToSend });
           // Emit event to refresh user list
           eventBus.emit('usersChanged');
           // Close the modal
           mutations.closeHovers();
         } else {
-          await usersApi.update({ ...this.user, scopes: this.selectedSources }, fields);
+          await usersApi.update({ ...this.user, scopes: scopesToSend }, fields);
           // Only emit usersChanged for admin user management, not profile updates
           if (state.user.permissions.admin && this.user.id !== state.user.id) {
             eventBus.emit('usersChanged');
           }
-          notify.showSuccess(this.$t("settings.userUpdated"));
+          notify.showSuccessToast(this.$t("settings.userUpdated"));
           mutations.closeHovers();
         }
       } catch (e) {
-        notify.showError(e);
+        console.error(e);
       }
     },
     newOTP() {
@@ -432,7 +457,7 @@ export default {
         if (state.user.permissions.admin && this.user.id !== state.user.id) {
           eventBus.emit('usersChanged');
         }
-        notify.showSuccess(this.$t("settings.userUpdated"));
+        notify.showSuccessToast(this.$t("settings.userUpdated"));
       } catch (e) {
         notify.showError(e);
       }

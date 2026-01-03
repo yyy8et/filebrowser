@@ -5,12 +5,26 @@ import { emitStateChanged } from './eventBus'; // Import the function from event
 import { usersApi } from "@/api";
 import { notify } from "@/notify";
 import { sortedItems } from "@/utils/sort.js";
-import { serverHasMultipleSources } from "@/utils/constants.js";
 import { url } from "@/utils";
 import { getTypeInfo } from "@/utils/mimetype";
 import { filesApi, publicApi } from "@/api";
 
 export const mutations = {
+  disableEventThemes: () => {
+    if (state.disableEventThemes) {
+      return;
+    }
+    localStorage.setItem("disableEventThemes", "true");
+    state.disableEventThemes = true;
+    // Set theme color back to user's preference or default
+    if (state.user.themeColor) {
+      document.documentElement.style.setProperty("--primaryColor", state.user.themeColor);
+    } else {
+      // Remove the override to use the default CSS variable
+      document.documentElement.style.removeProperty("--primaryColor");
+    }
+    emitStateChanged();
+  },
   setPreviousHistoryItem: (value) => {
     if (value == state.previousHistoryItem) {
       return;
@@ -100,17 +114,18 @@ export const mutations = {
           } else {
             state.sources.hasSourceInfo = true
           }
-          state.sources.info[k].used = source.used;
-          state.sources.info[k].total = source.total;
-          state.sources.info[k].usedPercentage = Math.round((source.used / source.total) * 100);
-          state.sources.info[k].status = source.status;
-          state.sources.info[k].name = source.name;
-          state.sources.info[k].files = source.numFiles;
-          state.sources.info[k].folders = source.numDirs;
-          state.sources.info[k].lastIndex = source.lastIndexedUnixTime;
-          state.sources.info[k].quickScanDurationSeconds = source.quickScanDurationSeconds;
-          state.sources.info[k].fullScanDurationSeconds = source.fullScanDurationSeconds;
-          state.sources.info[k].assessment = source.assessment;
+          state.sources.info[k].used = source.used || 0;
+          state.sources.info[k].total = source.total || 0;
+          state.sources.info[k].usedPercentage = source.total ? Math.round((source.used / source.total) * 100) : 0;
+          state.sources.info[k].status = source.status || "unknown";
+          state.sources.info[k].name = source.name || k;
+          state.sources.info[k].files = source.numFiles || 0;
+          state.sources.info[k].folders = source.numDirs || 0;
+          state.sources.info[k].lastIndex = source.lastIndexedUnixTime || 0;
+          state.sources.info[k].quickScanDurationSeconds = source.quickScanDurationSeconds || 0;
+          state.sources.info[k].fullScanDurationSeconds = source.fullScanDurationSeconds || 0;
+          state.sources.info[k].complexity = source.complexity || 0;
+          state.sources.info[k].scanners = source.scanners || [];
         }
       }
     }
@@ -122,10 +137,13 @@ export const mutations = {
     } else {
       state.realtimeDownCount = 0;
     }
+    if (value === state.realtimeActive) {
+      return;
+    }
     state.realtimeActive = value;
+    emitStateChanged();
   },
   setSources: (user) => {
-    state.serverHasMultipleSources = serverHasMultipleSources;
     const currentSource = user.scopes.length > 0 ? user.scopes[0].name : "";
     let sources = {info: {}, current: currentSource, count: user.scopes.length};
     for (const source of user.scopes) {
@@ -134,8 +152,27 @@ export const mutations = {
         used: 0,
         total: 0,
         usedPercentage: 0,
+        status: "unknown",
+        name: source.name,
+        files: 0,
+        folders: 0,
+        lastIndex: 0,
+        quickScanDurationSeconds: 0,
+        fullScanDurationSeconds: 0,
+        complexity: 0,
+        scanners: [],
       };
     }
+    // Check if user has custom sidebar links with sources
+    let targetSource = sources.current;
+    if (state.user?.sidebarLinks && state.user.sidebarLinks.length > 0) {
+      // Find first source link in user's sidebar links
+      const firstSourceLink = state.user.sidebarLinks.find(link => link.category === 'source' && link.sourceName);
+      if (firstSourceLink) {
+        targetSource = firstSourceLink.sourceName;
+      }
+    }
+    sources.defaultSource = targetSource;
     state.sources = sources;
     emitStateChanged();
   },
@@ -173,7 +210,11 @@ export const mutations = {
     emitStateChanged();
   },
   setMobile() {
-    state.isMobile = window.innerWidth <= 800
+    const newValue = window.innerWidth <= 800;
+    if (newValue === state.isMobile) {
+      return;
+    }
+    state.isMobile = newValue;
     emitStateChanged();
   },
   toggleDarkMode() {
@@ -192,11 +233,17 @@ export const mutations = {
     emitStateChanged();
   },
   setSidebarVisible(value) {
+    if (value === state.showSidebar) {
+      return;
+    }
     state.showSidebar = value;
     emitStateChanged();
   },
-  setUpload(value) {
-    state.upload = value;
+  setIsUploading(value) {
+    if (value === state.upload.isUploading) {
+      return;
+    }
+    state.upload.isUploading = value;
     emitStateChanged();
   },
   setUsage: (source,value) => {
@@ -204,11 +251,36 @@ export const mutations = {
     emitStateChanged();
   },
   closeHovers: () => {
+    // Check if uploads are active and we're not already showing the warning
+    const hasActiveUploads = state.upload.isUploading;
+    const hasUploadPrompt = state.prompts.some(p => p.name === "upload");
+    const hasWarningPrompt = state.prompts.some(p => p.name === "CloseWithActiveUploads");
+
+    if (hasActiveUploads && hasUploadPrompt && !hasWarningPrompt) {
+      // Show warning prompt instead of closing
+      mutations.showHover({
+        name: "CloseWithActiveUploads",
+        confirm: () => {
+          // User confirmed to close anyway - force close all hovers
+          state.prompts = [];
+          if (!state.stickySidebar) {
+            state.showSidebar = false;
+          }
+          emitStateChanged();
+        },
+        cancel: () => {
+          // User cancelled - just close the warning prompt
+          mutations.closeTopHover();
+        },
+      });
+      return;
+    }
+    // Normal close behavior
     state.prompts = [];
     if (!state.stickySidebar) {
       state.showSidebar = false;
     }
-    emitStateChanged();
+    mutations.hideTooltip(true)
   },
   closeTopHover: () => {
     state.prompts.pop();
@@ -217,7 +289,7 @@ export const mutations = {
         state.showSidebar = false;
       }
     }
-    emitStateChanged();
+    mutations.hideTooltip(true)
   },
   showHover: (value) => {
     if (typeof value === "object") {
@@ -239,7 +311,7 @@ export const mutations = {
         cancel: value?.cancel,
       });
     }
-    emitStateChanged();
+    mutations.hideTooltip(true)
   },
   setLoading: (loadType, status) => {
     if (status === false) {
@@ -307,15 +379,12 @@ export const mutations = {
     }
     emitStateChanged();
   },
-  setJWT: (value) => {
-    if (value == state.jwt) {
+  setShareData: (shareData) => {
+    const newShare = { ...state.share, ...shareData };
+    if (JSON.stringify(newShare) === JSON.stringify(state.share)) {
       return;
     }
-    state.jwt = value;
-    emitStateChanged();
-  },
-  setShareData: (shareData) => {
-    state.share = { ...state.share, ...shareData };
+    state.share = newShare;
     emitStateChanged();
   },
   clearShareData: () => {
@@ -360,10 +429,16 @@ export const mutations = {
     emitStateChanged();
   },
   setLastSelectedIndex: (index) => {
+    if (index === state.lastSelectedIndex) {
+      return;
+    }
     state.lastSelectedIndex = index;
     emitStateChanged();
   },
   setRaw: (value) => {
+    if (value === state.previewRaw) {
+      return;
+    }
     state.previewRaw = value;
     emitStateChanged();
   },
@@ -404,6 +479,8 @@ export const mutations = {
           "sorting",
           "gallerySize",
           "viewMode",
+          "showFirstLogin",
+          "sidebarLinks",
         ].includes(key)
       );
       value.id = state.user.id;
@@ -456,6 +533,9 @@ export const mutations = {
     emitStateChanged();
   },
   setRoute: (value) => {
+    if (value === state.route) {
+      return;
+    }
     state.route = value;
     emitStateChanged();
   },
@@ -471,6 +551,11 @@ export const mutations = {
     emitStateChanged();
   },
   updateClipboard: (value) => {
+    if (value.key === state.clipboard.key &&
+        JSON.stringify(value.items) === JSON.stringify(state.clipboard.items) &&
+        value.path === state.clipboard.path) {
+      return;
+    }
     state.clipboard.key = value.key;
     state.clipboard.items = value.items;
     state.clipboard.path = value.path;
@@ -482,6 +567,9 @@ export const mutations = {
     emitStateChanged();
   },
   setSharePassword: (value) => {
+    if (value === state.sharePassword) {
+      return;
+    }
     state.sharePassword = value;
     emitStateChanged();
   },
@@ -505,8 +593,11 @@ export const mutations = {
     state.tooltip.show = true;
     emitStateChanged();
   },
-  hideTooltip() {
+  hideTooltip(force=false) {
     if (!state.tooltip.show) {
+      if (force) {
+        emitStateChanged();
+      }
       return;
     }
     state.tooltip.show = false;
@@ -515,6 +606,9 @@ export const mutations = {
   setMaxConcurrentUpload: (value) => {
     if (!state.user.fileLoading) {
       state.user.fileLoading = {};
+    }
+    if (value === state.user.fileLoading.maxConcurrentUpload) {
+      return;
     }
     state.user.fileLoading.maxConcurrentUpload = value;
     emitStateChanged();
@@ -632,7 +726,7 @@ export const mutations = {
     }
 
     emitStateChanged();
-    
+
     // Auto-show navigation when it's first set up
     if (state.navigation.enabled && (state.navigation.previousLink || state.navigation.nextLink)) {
       mutations.setNavigationShow(true);
@@ -698,13 +792,16 @@ export const mutations = {
     emitStateChanged();
   },
   setNavigationTransitioning: (isTransitioning) => {
+    if (isTransitioning === state.navigation.isTransitioning) {
+      return;
+    }
     state.navigation.isTransitioning = isTransitioning;
     if (isTransitioning) {
       state.navigation.transitionStartTime = Date.now();
       // Safety timeout: if transition takes more than 5 seconds, clear it
       setTimeout(() => {
-        if (state.navigation.isTransitioning && 
-            state.navigation.transitionStartTime && 
+        if (state.navigation.isTransitioning &&
+            state.navigation.transitionStartTime &&
             Date.now() - state.navigation.transitionStartTime > 5000) {
           mutations.setNavigationTransitioning(false);
         }
@@ -721,6 +818,9 @@ export const mutations = {
     emitStateChanged();
   },
   setPlaybackState: (isPlaying) => {
+    if (isPlaying === state.playbackQueue.isPlaying) {
+      return;
+    }
     state.playbackQueue.isPlaying = isPlaying;
     emitStateChanged();
   },
@@ -734,6 +834,13 @@ export const mutations = {
   },
   togglePlayPause: () => {
     state.playbackQueue.shouldTogglePlayPause = !state.playbackQueue.shouldTogglePlayPause;
+    emitStateChanged();
+  },
+  setShareInfo: (shareInfo) => {
+    if (state.shareInfo === shareInfo) {
+      return;
+    }
+    state.shareInfo = shareInfo;
     emitStateChanged();
   },
 };

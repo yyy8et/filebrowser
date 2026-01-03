@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -30,6 +31,10 @@ func CheckForUpdates() (updateInfo, error) {
 	repoOwner := "gtsteffaniak"
 	repoName := "filebrowser"
 	currentVersion := version.Version
+	isDevMode := os.Getenv("FILEBROWSER_DEVMODE") == "true"
+	if currentVersion == "untracked" || currentVersion == "testing" || currentVersion == "" || isDevMode {
+		return updateInfo{}, nil
+	}
 	splitVersion := strings.Split(currentVersion, "-")
 	versionCategory := "stable"
 	if len(splitVersion) > 1 {
@@ -51,13 +56,13 @@ func CheckForUpdates() (updateInfo, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&tags); err != nil {
 		return updateInfo{}, err
 	}
-	// Find the latest beta version greater than the current one
+	// Find the latest version greater than the current one that matches the version category
 	var NewVersion string
 	for _, tag := range tags {
-		// Check if the version is valid, is a pre-release, and contains "beta"
+		// Check if the version is valid and the prerelease contains the version category
 		if semver.IsValid(tag.Name) && strings.Contains(semver.Prerelease(tag.Name), versionCategory) {
 			// Check if this tag is greater than the current version
-			// and also greater than any other beta version we've found so far
+			// and also greater than any other version we've found so far
 			if semver.Compare(tag.Name, currentVersion) > 0 {
 				if NewVersion == "" || semver.Compare(tag.Name, NewVersion) > 0 {
 					NewVersion = tag.Name

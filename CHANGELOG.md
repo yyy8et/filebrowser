@@ -2,6 +2,218 @@
 
 All notable changes to this project will be documented in this file. For commit guidelines, please refer to [Standard Version](https://github.com/conventional-changelog/standard-version).
 
+## v1.1.5-beta
+
+ **Notes**:
+ - Major git container tag request #1756
+
+ **BugFixes**:
+ - Sharing broken if source `disableIndexing: true` (#1742)
+ - Password protected share permission issues (#1729) (#1606) (#1593)
+ - Sidebar Sliding left (#1737)
+ - file permissions not working (#1762)
+ - handle Close() errors in archive creation (#1745)
+ - Move custom CSS and user-selected theme styles to the end of the body (#1744)
+
+## v1.1.4-beta
+
+ **New Features**:
+ - toggle to show searching results with thumbnails #1545
+
+ **Notes**:
+ - file list has loading spinner to help prevent double click issues and give better feedback
+ - improved cacheDir startup checks
+   - warning for slow read/write speeds below 50MB/s
+   - warning for low free space below 20GB
+   - warning if read/write latency is slow
+   - fatal for any errors reading or writing to the directory
+   - links to official docs for more info 
+ - access rule changes:
+   - denied folders won't show up in parent directory listing view (#1684)
+   - tools will respect access rules
+   - shares will check access rules based on user that created the share
+
+ **BugFixes**:
+ - passwords with special characters not working properly (#1648)
+ - encoded filename navigation issue (#1711)
+ - Fix/Improve some behaviors in nextPrevious (#1707)
+ - Files recognized as folder if they have the same name as previously deleted folders #1697
+ - multi logger support issue #1701
+
+## v1.1.3-beta
+
+ **Notes**:
+ - continue create user dir scope even if filesystem path creation fails #1509
+ - access control cache is cleared more aggresively to ensure no delay
+ - removed default .ico favicon in favor of .svg
+
+ **BugFixes**:
+ - indexing used size increases over time #1685
+ - download progress is not shown #1687
+
+## v1.1.2-beta
+
+ **Notes**:
+ - changes to duplicate detector
+   - temp SQLite database each query to reduce memory pressure
+   - max limit is 500 groups total
+ - Downloads from UI requests utf-8 formatted names to support chinese and other characters. Updated swagger docs.
+ - beta releases no longer publish to `latest` docker tag #1675
+
+ **BugFixes**:
+ - better index status updates, fixing delays #1649
+ - fixed long load times for listings with media info due sequential processing of files. 
+ - downloaded files always included `utf-8` in filename #1671
+ - custom sidebar links allow external links like `https://google.com`
+ - html title not populated correctly for links #1676
+
+## v1.1.1-beta
+
+ **Notes**:
+ - [docker] upgraded ffmpeg 8.0 to 8.0.1
+ - stricter access control checks on file downloads.
+ - Wrong translation on Chinese "save" button #1650
+ - Incorrect Spanish Translations in Folder Creation and Rename Actions #1626
+ - duplicate file detector has stricter partial checksum match #1617
+
+ **BugFixes**:
+ - added missing exiftool to docker image for heic conversion orientation support
+ - v1.1.0-beta - Incorrect naming of 1 file in directory-info #1621
+ - disable only office viewing settings not applying
+ - OnlyOffice integration does not work behind proxy authentication #1422
+ - Newly created users "add on" to defined scope of previous user #1628 #1518
+ - disable chown on upload / file saving #1469 #1546
+ - Uploading a file will silently overwrite any existing file with the same name #1564
+ - share file url issue
+ - Fix drag and drop and rows in normal view #1651
+ - Some text based files are not able to edit. #1567
+
+## v1.1.0-beta
+
+ **New Features**:
+ - Added tools
+   - size analyzer -- quickly show largest files in interactive graphical chart
+   - duplicate finder -- find duplicate files larger than 1MB
+   - material icon picker and previewer
+ - Listing View Style updates
+   - Status bar for listing view #1459
+   - Duration field shows up if media is shown with duration
+   - More dynamic view modes with additional styling changes
+   - Total display modes consolidated into 3 main groups: list, gallery, normal. "icon" and "compact" mode exist as views based on display size setting.
+ - Customizable sidebar links
+   - Logged in users can have their preferences saved and synced
+   - Can rearrange, add custom links, and save your preferences.
+   - Can customize shares with their own custom sidebar links.
+ - Dynamic scopes for OIDC #1414 #1363
+ - Share and Access Rules validation
+   - If a file/path is moved/renamed in UI its rules and shares will always follow.
+   - If a file/path is moved/renamed outside UI, a warning message will show and ability to associate to new path
+ - Cascade delete access in Access Management when deleting a User #1347
+ - Enhanced notifications #1331
+   - Added "toast" notification type support -- most success messages show as toast now.
+   - multiple stacked notifications possible
+   - notification button support, such as click to open folder after moving file.
+   - notification history (not including toasts)
+   - Add swipe and visual timeout to notifications #1600
+ - Choose different bind ip via `server.listen` #1573
+ - Allow disabling clearing cache each startup via `server.cacheDirCleanup: false` in config #1576
+
+ **Notes**:
+ - more efficient user update actions. Successful PUT actions return only 204 if successful.
+ - Do not enter directory on "New Folder" action #1343
+ - Improved indexing performance - individual scanners per directory at root.
+ - Improved search memory efficiency
+ - Improved scrolling performance
+ - Static file handling has been streamlined, could potentially see some changes from this.
+ - No longer automatically publishing any dev builds to docker
+ - deprecated "DefaultLandingPage" option -- now determined by first source link in sidebar.
+ - Improve rename prompt #1608 #1556
+
+ **BugFixes**:
+ - uploading/editing/saving to password protected shares error
+ - updating a share with password protection without a password removed the password.
+ - per-user download counts were not persistant accross restarts
+ - "Update" button in Chinese wraps incorrectely #1542
+
+## v1.0.1-stable
+
+ **BugFixes**:
+ - UserDefault always applies to newly created users #1518
+ - Updating user's own password sometimes doesn't work
+ - Anonymous Share link with optional password does not allow downloads #1553
+ - Share options should go in the meta tags #1511
+ - Unable to select compression format when downloading multiple files/dir via Share link (v1.0.0) #1557
+ - fixed sidebar clipping on some browsers like safari
+ - Files show as Download is not available even though it is #1537
+
+## v1.0.1-beta & v1.0.0-stable
+
+ **New Features**:
+ - login icon support added via `frontend.loginIcon` config path variable
+
+ **Notes**:
+ - updated default login icon
+ - stopped publishing rolling `dev` docker tag.
+ - build requirement change -- from node 18 > node 20 with npm 9.0.0+
+ - version is not shown for unauthenticated users #1444
+ - adjusted how static assets are served to better handle icon standards
+ - fixed signup login #1444
+ - update makefile linker flags to properly set version and sha #1474
+ - better windows build support -- `make setup` and `make dev` work as long as git is installed on windows
+ - added better first initilization detection
+   - If filebrowser initialized and does not detect a database, a new warning message in server logs appears.
+   - If theres no database on start, any admin user's first login will see a welcome message in the ui.
+   - For docker, it defaults to ./data/database.db, but will also fallback to ./database.db without any additional configuration.
+
+ **BugFixes**:
+ - Generating multiple HEIC previews in parallel fails #1470
+ - ? in path not always encoded right #1447
+ - fixed some condition that the halloween background doesn't load properly
+ - some comments not showing up on config viewer in settings
+
+## v1.0.0-beta
+
+ **Notes**:
+ - Enhanced onlyoffice debugger with more wholistic backend logs
+ - Updated info prompt styling
+ - share qr code links to externalUrl for entire share if exists #1329
+
+ **BugFixes**:
+ - cookie host is set using x-Forwarded-Host to better support reverse proxies.
+ - HEIC conversion not working #1460
+ - 'Prevent user changing their password' also prevents admins changing the users password. #1365
+ - OnlyOffice write problem #1397 #1068
+ - Conditionals starting with a . seem to not work. #1455
+ - Last modified in file info is empty #1443
+ - Share links: 'Default View Mode' does not apply to subfolders. #1463
+
+## v0.8.11-beta
+
+ **New Features**:
+ - OnlyOffice debugger now shows backend logs as well for admin users.
+ - If proxy auth based `username` equals `auth.adminUsername`, the user will be promoted to admin.
+ - Guard against accidently cancelling uploads #1419
+ - Added a quirky halloween theme that automatically applies on october 31st -- you can disable this from happening by setting `frontend.styling.disableEventThemes`
+
+ **Notes**:
+ - Removed share setting `enableOnlyOfficeEditing` -- uses value from `allowEditing`
+ - Anonymous users can now edit if a share has edit permissions enabled.
+ - No "Incompatible user settings detected" message if its first setup
+ - cookie handling revamped
+   - fully backend managed
+   - `auth` cookie name changed to `filebrowser_quantum_jwt`
+   - auth cookie for password users no longer session based #1439
+   - removed state jwt state variable -- 100% cookie based.
+
+ **BugFixes**:
+ - Fixed issue editing onlyoffice on shares #1397
+ - Added proper and robust logging / error handling for the onlyoffice callback. #1422 #1068
+ - If a file was moved/renamed/deleted onlyoffice would re-save the original file without error, now it gives error the file doesn't exist anymore.
+ - OnlyOffice integration does not work behind proxy authentication #1422
+ - proxy-based authentication with docker does not work unless set up with password-based login first #1226
+ - Select all bug on safari mobile #1421
+ - Dragging a item into itself #1446
+
 ## v0.8.10-beta
 
  **New Features**:

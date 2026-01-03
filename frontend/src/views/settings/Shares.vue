@@ -9,10 +9,11 @@
       <thead>
         <tr>
           <th>{{ $t("general.hash") }}</th>
-          <th>{{ $t("settings.path") }}</th>
-          <th>{{ $t("settings.shareDuration") }}</th>
-          <th>{{ $t("settings.downloads") }}</th>
-          <th>{{ $t("settings.username") }}</th>
+          <th>{{ $t("general.path") }}</th>
+          <th>{{ $t("time.unit") }}</th>
+          <th>{{ $t("general.downloads") }}</th>
+          <th>{{ $t("general.username") }}</th>
+          <th></th>
           <th></th>
           <th></th>
           <th></th>
@@ -35,14 +36,17 @@
           </td>
           <td>{{ item.username }}</td>
           <td class="small">
-            <button class="action" @click="editLink(item)" :aria-label="$t('buttons.edit')"
-              :title="$t('buttons.edit')">
+            <i v-if="!item.pathExists" class="material-icons warning-icon" :title="$t('messages.pathNotFound')">warning</i>
+          </td>
+          <td class="small">
+            <button class="action" @click="editLink(item)" :aria-label="$t('general.edit')"
+              :title="$t('general.edit')">
               <i class="material-icons">edit</i>
             </button>
           </td>
           <td class="small">
-            <button class="action" @click="deleteLink($event, item)" :aria-label="$t('buttons.delete')"
-              :title="$t('buttons.delete')">
+            <button class="action" @click="deleteLink($event, item)" :aria-label="$t('general.delete')"
+              :title="$t('general.delete')">
               <i class="material-icons">delete</i>
             </button>
           </td>
@@ -53,7 +57,7 @@
             </button>
           </td>
           <td class="small">
-            <button :disabled="item.shareType == 'upload'" class="action copy-clipboard" :data-clipboard-text="fixDownloadURL(item.downloadURL)" v-if="item.downloadURL"
+            <button :disabled="item.shareType == 'upload'" class="action copy-clipboard" :data-clipboard-text="item.downloadURL" v-if="item.downloadURL"
               :aria-label="$t('buttons.copyDownloadLinkToClipboard')" :title="$t('buttons.copyDownloadLinkToClipboard')">
               <i class="material-icons">content_paste_go</i>
             </button>
@@ -70,14 +74,12 @@
 
 <script>
 import { notify } from "@/notify";
-import { publicApi, shareApi } from "@/api";
+import { shareApi } from "@/api";
 import { state, mutations, getters } from "@/store";
 import Clipboard from "clipboard";
 import Errors from "@/views/Errors.vue";
 import { fromNow } from '@/utils/moment';
 import { eventBus } from "@/store/eventBus";
-import { fixDownloadURL } from "@/utils/url";
-import { globalVars } from "@/utils/constants";
 
 export default {
   name: "shares",
@@ -98,17 +100,17 @@ export default {
     await this.reloadShares();
   },
   mounted() {
-    this.clip = new Clipboard(".copy-clipboard");
-    this.clip.on("success", () => {
-      notify.showSuccess(this.$t("success.linkCopied"));
-    });
+    this.initClipboard();
     // Listen for share changes
     eventBus.on('sharesChanged', this.reloadShares);
   },
   beforeUnmount() {
-    this.clip.destroy();
+    // Clean up clipboard
+    if (this.clip) {
+      this.clip.destroy();
+    }
     // Clean up event listener
-    eventBus.removeEventListener('sharesChanged', this.reloadShares);
+    eventBus.off('sharesChanged', this.reloadShares);
   },
   computed: {
     settings() {
@@ -135,12 +137,30 @@ export default {
         }
         this.links = links;
         this.error = null; // Clear any previous errors
+      this.$nextTick(() => {
+        this.initClipboard();
+      });
       } catch (e) {
         this.error = e;
-        notify.showError(e);
+        console.error(e);
       } finally {
         mutations.setLoading("shares", false);
       }
+    },
+    initClipboard() {
+      // First destroy any existing clipboard
+      if (this.clip) {
+        this.clip.destroy();
+      }
+      // Create new clipboard
+      this.clip = new Clipboard(".copy-clipboard");
+      this.clip.on("success", () => {
+        notify.showSuccessToast(this.$t("success.linkCopied"));
+      });
+      this.clip.on("error", () => {
+        notify.showErrorToast(this.$t("prompts.copyToClipboardFailed"));
+        console.log("Failed to copy link to the clipboard", e);
+      });
     },
     editLink(item) {
       mutations.showHover({
@@ -164,9 +184,9 @@ export default {
           try {
             shareApi.remove(item.hash);
             this.links = this.links.filter((link) => link.hash !== item.hash);
-            notify.showSuccess(this.$t("settings.shareDeleted"));
+            notify.showSuccessToast(this.$t("settings.shareDeleted"));
           } catch (e) {
-            notify.showError(e);
+            console.error(e);
           }
         },
       });
@@ -178,19 +198,10 @@ export default {
       return fromNow(time);
     },
     /**
-     * @param {any} item
+     * @param {any} share
      */
-    buildLink(item) {
-      return publicApi.getShareURL(item);
-    },
-    fixDownloadURL(downloadUrl) {
-      // Only fix the URL if it doesn't already have the correct external domain
-      if (globalVars.externalUrl) {
-        // URL already has the correct external domain, use as-is
-        return downloadUrl;
-      }
-      // URL needs fixing (internal domain or no externalUrl set)
-      return fixDownloadURL(downloadUrl);
+    buildLink(share) {
+      return share.shareURL;
     },
   },
 };

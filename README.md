@@ -2,25 +2,22 @@
 
   [![Go Report Card](https://goreportcard.com/badge/github.com/gtsteffaniak/filebrowser/backend)](https://goreportcard.com/report/github.com/gtsteffaniak/filebrowser/backend)
   [![Codacy Badge](https://app.codacy.com/project/badge/Grade/1c48cfb7646d4009aa8c6f71287670b8)](https://www.codacy.com/gh/gtsteffaniak/filebrowser/dashboard)
-  [![latest version](https://img.shields.io/github/release/gtsteffaniak/filebrowser/all.svg)](https://github.com/gtsteffaniak/filebrowser/releases)
+  [![latest version](https://img.shields.io/github/v/release/gtsteffaniak/filebrowser)](https://github.com/gtsteffaniak/filebrowser/releases)
   [![DockerHub Pulls](https://img.shields.io/docker/pulls/gtstef/filebrowser?label=latest%20Docker%20pulls)](https://hub.docker.com/r/gtstef/filebrowser)
   [![Apache-2.0 License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 
   [![Donate](https://www.paypalobjects.com/en_US/i/btn/btn_donate_SM.gif)](https://github.com/gtsteffaniak/filebrowser/wiki/Q&A#is-there-a-way-to-donate-or-support-this-project)
 
-  <img width="150" src="https://github.com/user-attachments/assets/59986a2a-f960-4536-aa35-4a9a7c98ad48" title="Logo">
+  <img width="150" src="https://github.com/user-attachments/assets/c40b22c9-33da-47b7-bc4c-ce69bb5cc174" title="Logo">
   <h3>FileBrowser Quantum</h3>
   The best free self-hosted web-based file manager.
   <br/><br/>
   <img width="800" src="https://github.com/user-attachments/assets/162d7a95-33b7-49bd-976c-dd6822c0d22b">
 </div>
 
-> [!WARNING]
-> There is no stable version -- :construction: coming very soon!
-
 ## Pinned
 
-:loudspeaker: [Stable Release & 0.9.0 Update](https://github.com/gtsteffaniak/filebrowser/discussions/1293)
+:loudspeaker: [What's Coming Soon](https://github.com/gtsteffaniak/filebrowser/discussions/1622)
 
 :pushpin: [Read The Official Docs](https://filebrowserquantum.com/) (currently english-only)
 
@@ -38,26 +35,26 @@ Ready to try it out? See [Getting Started Docs](https://filebrowserquantum.com/e
 
 FileBrowser Quantum is a massive fork of the file browser open-source project with the following changes:
 
-  1. ✅ Multiple sources support
+  1. ✅ Add and configure multiple sources
   2. ✅ Login support for OIDC, password + 2FA, and proxy.
   3. ✅ Beautiful, Responsive, and Customizable user interface.
-  4. ✅ Simplified configuration via `config.yaml` config file.
+  4. ✅ Streamlined configuration via `config.yaml` config file.
   5. ✅ Ultra-efficient [indexing](https://github.com/gtsteffaniak/filebrowser/wiki/Indexing) and real-time updates
      - Real-time search results as you type.
      - Real-time monitoring and updates in the UI.
      - Search supports file and folder sizes, along with various filters.
   6. ✅ Better listing browsing
-     - More file type previews, such as **office** and **video** file previews
-     - Instantly switches view modes and sort order without reloading data.
-     - Folder sizes are displayed.
+     - Better thumbnail support including **office**, **video**, and **album artwork**
+     - Faster and more responsive views with animations.
+     - Folder sizes are displayed and support for thumbnails
      - Navigating remembers the last scroll position.
-  7. ✅ Highly configurable and customizable sharing options, incuding:
+  7. ✅ Highly configurable and customizable sharing options
      - share expiration time
      - users who can access share (including anonymous)
      - styling and themes
      - file viewing, editing, and uploading permissions
   8. ✅ Directory-level access control that can be scoped to user or group.
-  8. ✅ Developer API support
+  9. ✅ Developer API support
      - Ability to create long-lived API Tokens.
      - A helpful Swagger page is available at `/swagger` endpoint for API enabled users.
 
@@ -98,19 +95,18 @@ a pop-up menu.
 See the [Official Docs](https://filebrowserquantum.com/). Contributions are welcome and encouraged! See [FilebrowserDocs Github](https://github.com/quantumx-apps/filebrowserDocs).
 
 ## Comparison Chart
-
-Application Name | <img width="48" src="https://github.com/user-attachments/assets/59986a2a-f960-4536-aa35-4a9a7c98ad48" > Quantum | <img width="48" src="https://github.com/filebrowser/filebrowser/blob/master/frontend/public/img/logo.svg" > Filebrowser | <img width="48" src="https://github.com/mickael-kerjean/filestash/blob/master/public/assets/logo/app_icon.png?raw=true" > Filestash | <img width="48" src="https://avatars.githubusercontent.com/u/19211038?s=200&v=4" >  Nextcloud | <img width="48" src="https://upload.wikimedia.org/wikipedia/commons/thumb/d/da/Google_Drive_logo.png/480px-Google_Drive_logo.png" > Google_Drive | <img width="48" src="https://avatars.githubusercontent.com/u/6422152?v=4" > FileRun
+Application Name | <img width="48" src="https://github.com/user-attachments/assets/c40b22c9-33da-47b7-bc4c-ce69bb5cc174" > Quantum | <img width="48" src="https://github.com/filebrowser/filebrowser/blob/master/frontend/public/img/logo.svg" > Filebrowser | <img width="48" src="https://github.com/mickael-kerjean/filestash/blob/master/public/assets/logo/app_icon.png?raw=true" > Filestash | <img width="48" src="https://avatars.githubusercontent.com/u/19211038?s=200&v=4" >  Nextcloud | <img width="48" src="https://upload.wikimedia.org/wikipedia/commons/thumb/d/da/Google_Drive_logo.png/480px-Google_Drive_logo.png" > Google_Drive | <img width="48" src="https://avatars.githubusercontent.com/u/6422152?v=4" > FileRun
 --- | --- | --- | --- | --- | --- | --- |
 Filesystem support            | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ |
 Linux                         | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ |
 Windows                       | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ |
 Mac                           | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ |
 Self hostable                 | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ |
-Has Stable Release?           | :construction: | ✅ | ✅ | ✅ | ✅ | ✅ |
+Has Stable Release?           | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 S3 support                    | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ |
 webdav support                | ❌ | ❌ | ✅ | ✅ | ❌ | ✅ |
 FTP support                   | ❌ | ❌ | ✅ | ✅ | ❌ | ✅ |
-Dedicated docs site?          | :construction: | ✅ | ✅ | ✅ | ❌ | ✅ |
+Dedicated docs site?          | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ |
 Multiple sources at once      | ✅ | ❌ | ✅ | ✅ | ❌ | ✅ |
 Docker image size             | 180 MB (with ffmpeg) | 31 MB  | 240 MB (main image) | 250 MB | ❌ | > 2 GB |
 Min. Memory Requirements      | 256 MB | 128 MB | 128 MB (main image) | 512 MB | ❌ | 512 MB   |

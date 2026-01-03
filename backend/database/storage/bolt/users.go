@@ -74,20 +74,28 @@ func (st usersBackend) Update(user *users.User, actorIsAdmin bool, fields ...str
 	if err != nil {
 		return err
 	}
+
 	passwordUser := existingUser.LoginMethod == users.LoginMethodPassword
 	enforcedOtp := settings.Config.Auth.Methods.PasswordAuth.EnforcedOtp
 	if passwordUser && enforcedOtp && !user.OtpEnabled {
 		return errors.ErrNoTotpConfigured
+	}
+	if user.LoginMethod == "" {
+		user.LoginMethod = existingUser.LoginMethod
 	}
 	fields, err = parseFields(user, fields, actorIsAdmin)
 	if err != nil {
 		return err
 	}
 
+	if user.LoginMethod == "" {
+		user.LoginMethod = existingUser.LoginMethod
+	}
+
 	if !slices.Contains(fields, "Password") {
 		user.Password = existingUser.Password
 	} else {
-		if existingUser.LockPassword {
+		if existingUser.LockPassword && !actorIsAdmin {
 			return fmt.Errorf("password cannot be changed when lock password is enabled")
 		}
 	}
@@ -109,8 +117,16 @@ func (st usersBackend) Update(user *users.User, actorIsAdmin bool, fields ...str
 		user.Scopes = adjustedScopes
 		err = files.MakeUserDirs(user, true)
 		if err != nil {
+			logger.Error(err.Error())
+		}
+	}
+	// converting scopes to map of paths intead of names (names can change)
+	if slices.Contains(fields, "SidebarLinks") {
+		adjustedLinks, err := settings.ConvertToBackendSidebarLinks(user.SidebarLinks)
+		if err != nil {
 			return err
 		}
+		user.SidebarLinks = adjustedLinks
 	}
 	// Use reflection to access struct fields
 	userFields := reflect.ValueOf(user).Elem() // Get struct value
@@ -275,6 +291,7 @@ func parseFields(user *users.User, fields []string, actorIsAdmin bool) ([]string
 		if capitalField == "Password" {
 			// Only process password if it's actually being updated (not empty)
 			if user.Password != "" {
+				logger.Debugf("Updating password for user [%s] loginMethod: %s", user.Username, user.LoginMethod)
 				if user.LoginMethod != users.LoginMethodPassword {
 					return nil, fmt.Errorf("password cannot be changed when login method is not password")
 				}

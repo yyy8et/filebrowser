@@ -1,7 +1,7 @@
 <template>
   <a
     :href="getUrl()"
-    class="item listing-item clickable no-select"
+    class="listing-item clickable no-select"
     :class="{
       activebutton: isSelected,
       hiddenFile: isHiddenNotSelected && this && !this.isDraggedOver,
@@ -40,7 +40,7 @@
     </div>
 
     <div class="text">
-      <p :class="{ adjustment: quickDownloadEnabled }" class="name">{{ name }}</p>
+      <p :class="{ adjustment: quickDownloadEnabled }" class="name">{{ displayName }}</p>
       <p
         class="size"
         :class="{ adjustment: quickDownloadEnabled }"
@@ -51,6 +51,7 @@
       <p class="modified">
         <time :datetime="modified">{{ getTime() }}</time>
       </p>
+      <p v-if="hasDuration" class="duration">{{ getDuration() }}</p>
     </div>
     <Icon
       @click.stop="downloadFile"
@@ -69,7 +70,7 @@
 </template>
 
 <script>
-import { globalVars, serverHasMultipleSources, shareInfo } from "@/utils/constants";
+import { globalVars } from "@/utils/constants";
 import downloadFiles from "@/utils/download";
 
 import { getHumanReadableFilesize } from "@/utils/filesizes";
@@ -77,6 +78,7 @@ import { filesApi,publicApi } from "@/api";
 import * as upload from "@/utils/upload";
 import { state, getters, mutations } from "@/store"; // Import your custom store
 import { url } from "@/utils";
+import { notify } from "@/notify";
 import Icon from "@/components/files/Icon.vue";
 
 export default {
@@ -109,8 +111,15 @@ export default {
     "reducedOpacity",
     "hash",
     "hasPreview",
+    "metadata",
+    "hasDuration",
+    "displayFullPath",
   ],
   computed: {
+    displayName() {
+      // If displayFullPath is true, show the full path, otherwise just the name
+      return this.displayFullPath ? this.path : this.name;
+    },
     galleryView() {
       return getters.viewMode() === "gallery";
     },
@@ -118,7 +127,7 @@ export default {
       // @ts-ignore
       if (getters.isShare()) {
         // @ts-ignore
-        return shareInfo.quickDownload && !this.isDir;
+        return state.shareInfo?.quickDownload && !this.isDir;
       }
       // @ts-ignore
       return state.user?.quickDownload && !this.galleryView && !this.isDir;
@@ -150,7 +159,7 @@ export default {
     },
     isDraggable() {
       // @ts-ignore
-      return this.readOnly == undefined && state.user.permissions?.modify || shareInfo.allowCreate;
+      return this.readOnly == undefined && state.user.permissions?.modify || state.shareInfo.allowCreate;
     },
     canDrop() {
       if (!this.isDir || this.readOnly !== undefined) return false;
@@ -174,15 +183,26 @@ export default {
       return true;
     },
     thumbnailUrl() {
-      if (!globalVars.enableThumbs || !state.req.path || !this.name) {
+      if (!globalVars.enableThumbs) {
         return "";
       }
-      const previewPath = url.joinPath(state.req.path, this.name);
+
+      // Use the path prop if available (e.g., in duplicate finder),
+      // otherwise construct from state.req.path + name (normal file listing)
+      let previewPath;
+      if (this.path) {
+        previewPath = this.path;
+      } else if (state.req.path && this.name) {
+        previewPath = url.joinPath(state.req.path, this.name);
+      } else {
+        return "";
+      }
+
       if (getters.isShare()) {
         return publicApi.getPreviewURL(previewPath);
       }
       // @ts-ignore
-      return filesApi.getPreviewURL(state.req.source, previewPath, this.modified);
+      return filesApi.getPreviewURL(this.source || state.req.source, previewPath, this.modified);
     },
     isThumbsEnabled() {
       return globalVars.enableThumbs;
@@ -244,10 +264,7 @@ export default {
       if (this.hash) {
         return globalVars.baseURL + "public/share/" + this.hash + "/" + url.encodedPath(this.path);
       }
-      if (serverHasMultipleSources) {
-        return globalVars.baseURL + "files/" + encodeURIComponent(this.source) + url.encodedPath(this.path);
-      }
-      return globalVars.baseURL + "files" + url.encodedPath(this.path);
+      return globalVars.baseURL + "files/" + encodeURIComponent(this.source) + url.encodedPath(this.path);
     },
     /** @param {MouseEvent} event */
     onRightClick(event) {
@@ -287,6 +304,19 @@ export default {
     getTime() {
       // @ts-ignore
       return getters.getTime(this.modified);
+    },
+    getDuration() {
+      if (!this.metadata || !this.metadata.duration) {
+        return "";
+      }
+      const seconds = this.metadata.duration;
+      const hours = Math.floor(seconds / 3600);
+      const minutes = Math.floor((seconds % 3600) / 60);
+      const secs = Math.floor(seconds % 60);
+      if (hours > 0) {
+        return `${hours}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+      }
+      return `${minutes}:${secs.toString().padStart(2, '0')}`;
     },
     /** @param {DragEvent} event */
     dragLeave(event) {
@@ -329,6 +359,7 @@ export default {
     /** @param {DragEvent} event */
     async drop(event) {
       this.isDraggedOver = false;
+      if (!this.canDrop) return;
 
       // Only allow internal drags (from filebrowser items), not external files from desktop
       const isInternal = Array.from(event.dataTransfer.types).includes(
@@ -357,9 +388,34 @@ export default {
         });
       }
 
+      // Filter out items being dropped onto themselves or into their own subdirectories
+      items = items.filter(item => {
+        // Skip if source and destination are the same
+        if (item.from === item.to) {
+          return false;
+        }
+
+        // Skip if trying to move a directory into itself
+        // Check if the destination path would be within the source path
+        const fromPath = item.from;
+        const destinationDir = this.path;
+
+        // If destination dir is the same as or contains the source path, skip
+        if (fromPath === destinationDir || fromPath.startsWith(destinationDir + '/')) {
+          return false;
+        }
+
+        return true;
+      });
+
+      // If all items were filtered out, silently skip the operation
+      if (items.length === 0) {
+        return;
+      }
+
       let checkAction = async () => {
         if (getters.isShare()) {
-          return await publicApi.fetchPub(this.path, shareInfo.hash);
+          return await publicApi.fetchPub(this.path, state.shareInfo.hash);
         } else {
           return await filesApi.fetchFiles(this.source, this.path);
         }
@@ -382,12 +438,28 @@ export default {
 
         try {
           if (getters.isShare()) {
-            await publicApi.moveCopy(items, "move", overwrite, rename);
+            await publicApi.moveCopy(state.shareInfo.hash, items, "move", overwrite, rename);
           } else {
             await filesApi.moveCopy(items, "move", overwrite, rename);
           }
-          // Close the prompt after successful operation
+          // Notification to move into the folder
+          const buttonAction = () => {
+            this.open();
+          };
+          const buttonProps = {
+            icon: "folder",
+            buttons: [
+              {
+                label: this.$t("buttons.goToItem"),
+                primary: true,
+                action: buttonAction
+              }
+            ]
+          };
+          notify.showSuccess(this.$t("prompts.moveSuccess"), buttonProps);
+          // Close the prompt after successful operation and reload items for reflect the changes
           mutations.closeHovers();
+          mutations.setReload(true);
         } catch (error) {
           // Close the prompt and let error handling continue
           mutations.closeHovers();
@@ -435,9 +507,13 @@ export default {
       // @ts-ignore
       this.contextTimeout = setTimeout(() => {
         if (!this.isSwipe) {
-          mutations.resetSelected();
-          // @ts-ignore
-          mutations.addSelected(this.index);
+          // Only reset selection if this item is not already selected
+          // This prevents resetting selection when trying to open context menu on selected item
+          if (!this.isSelected) {
+            mutations.resetSelected();
+            // @ts-ignore
+            mutations.addSelected(this.index);
+          }
         }
       }, 500);
     },
@@ -518,6 +594,7 @@ export default {
         !state.user.singleClick &&
         !event.ctrlKey &&
         !event.metaKey &&
+        !event.shiftKey &&
         !state.multiple
       ) {
         mutations.resetSelected();
@@ -526,11 +603,16 @@ export default {
       mutations.setLastSelectedIndex(this.index);
     },
     open() {
-      const previousHistoryItem = {
-        name: state.req.items[this.index].name,
-        source: state.req.source,
-        path: state.req.path,
-      };
+      // Check if state.req.items exists and has the item at this index
+      // This prevents errors when ListingItem is used outside of the main file listing (e.g., duplicate finder)
+      let previousHistoryItem = null;
+      if (state.req.items && state.req.items[this.index]) {
+        previousHistoryItem = {
+          name: state.req.items[this.index].name,
+          source: state.req.source,
+          path: state.req.path,
+        };
+      }
       url.goToItem(this.source, this.path, previousHistoryItem);
     },
   },
@@ -548,7 +630,7 @@ export default {
   font-size: 0.5em;
 }
 
-.item {
+.listing-item {
   -webkit-touch-callout: none; /* Disable the default long press preview */
 }
 

@@ -11,9 +11,9 @@ import (
 	"github.com/gtsteffaniak/go-logger/logger"
 )
 
-var createBackup = []bool{}
+var createBackup = false
 
-func validateUserInfo() {
+func validateUserInfo(newDB bool) {
 	// update source info for users if names/sources/paths might have changed
 	usersList, err := store.Users.Gets()
 	if err != nil {
@@ -34,6 +34,9 @@ func validateUserInfo() {
 		if updateLoginType(user) {
 			updateUser = true
 		}
+		if updateShowFirstLogin(user) {
+			updateUser = true
+		}
 		adminUser := settings.Config.Auth.AdminUsername
 		adminPass := settings.Config.Auth.AdminPassword
 		passwordEnabled := settings.Config.Auth.Methods.PasswordAuth.Enabled
@@ -45,8 +48,8 @@ func validateUserInfo() {
 			changePass = true
 		}
 		if updateUser {
-			skipCreateBackup := os.Getenv("FILEBROWSER_DISABLE_AUTOMATIC_BACKUP") == "true"
-			if len(createBackup) == 1 && !skipCreateBackup {
+			skipCreateBackup := os.Getenv("FILEBROWSER_DISABLE_AUTOMATIC_BACKUP") == "true" || newDB
+			if createBackup && !skipCreateBackup {
 				logger.Warning("Incompatible user settings detected, creating backup of database before converting.")
 				err = fileutils.CopyFile(settings.Config.Server.Database, fmt.Sprintf("%s.bak", settings.Config.Server.Database))
 				if err != nil {
@@ -73,27 +76,23 @@ func updateUserScopes(user *users.User) bool {
 
 	// Preserve order by using Config.Server.Sources
 	for _, src := range settings.Config.Server.Sources {
-		realsource, ok := settings.Config.Server.NameToSource[src.Name]
-		if !ok {
-			continue
-		}
-		existingScope, ok := existing[realsource.Path]
+		existingScope, ok := existing[src.Path]
 		if ok {
 			// If scope is empty and there's a default, apply default
 			if existingScope.Scope == "" {
 				existingScope.Scope = src.Config.DefaultUserScope
 			}
-		} else if realsource.Config.DefaultEnabled {
-			existingScope.Scope = realsource.Config.DefaultUserScope
+		} else if src.Config.DefaultEnabled {
+			existingScope.Scope = src.Config.DefaultUserScope
 		} else {
 			continue
 		}
 
 		newScopes = append(newScopes, users.SourceScope{
-			Name:  realsource.Path,
+			Name:  src.Path,
 			Scope: existingScope.Scope,
 		})
-		seen[realsource.Path] = struct{}{}
+		seen[src.Path] = struct{}{}
 	}
 
 	// Preserve user-defined scopes not matching current sources, append to end
@@ -105,6 +104,14 @@ func updateUserScopes(user *users.User) bool {
 	changed := !reflect.DeepEqual(user.Scopes, newScopes)
 	user.Scopes = newScopes
 	return changed
+}
+
+func updateShowFirstLogin(user *users.User) bool {
+	if user.ShowFirstLogin && !settings.Env.IsFirstLoad {
+		user.ShowFirstLogin = false
+		return true
+	}
+	return false
 }
 
 // func to convert legacy user with perm key to permissions
@@ -157,7 +164,7 @@ func updatePermissions(user *users.User) bool {
 	}
 	user.Version = 1
 	if updateUser {
-		createBackup = append(createBackup, true)
+		createBackup = true
 	}
 	return updateUser
 }

@@ -1,7 +1,6 @@
 import { fetchURL, fetchJSON } from '@/api/utils'
 import { getApiPath, getPublicApiPath } from '@/utils/url.js'
 import { notify } from '@/notify' // Import notify for error handling
-import { setNewToken } from '@/utils/auth.js' // Import setNewToken for token management
 export async function getAllUsers() {
   try {
     const apiPath = getApiPath('api/users')
@@ -19,7 +18,7 @@ export async function generateOTP(username, password) {
     const res = await fetch(apiPath, {
       method: 'POST',
       headers: {
-        'X-Password': password,
+        'X-Password': encodeURIComponent(password),
       }
     })
     return await res.json()
@@ -36,7 +35,7 @@ export async function verifyOtp(username, password, otp) {
     const res = await fetch(apiPath, {
       method: 'POST',
       headers: {
-        'X-Password': password,
+        'X-Password': encodeURIComponent(password),
         'X-Secret': otp,
       }
     })
@@ -66,7 +65,7 @@ export async function login(username, password, recaptcha, otp) {
     method: 'POST',
     credentials: 'same-origin', // Ensure cookies can be set during login
     headers: {
-      'X-Password': password,
+      'X-Password': encodeURIComponent(password),
       'X-Secret': otp,
     }
   });
@@ -80,13 +79,9 @@ export async function login(username, password, recaptcha, otp) {
     body = { message: bodyText };
   }
 
-  if (res.status === 200) {
-    await setNewToken(bodyText);
-  } else if (res.status === 403) {
+  if (res.status != 200) {
     const msg = body.message || 'Forbidden';
     throw new Error(msg);
-  } else {
-    throw new Error(body.message || bodyText || 'Failed to login');
   }
 }
 export async function get(id) {
@@ -120,7 +115,17 @@ export async function signupLogin (username, password, otp) {
   })
 
   if (res.status !== 201) {
-    throw new Error(res.status)
+    // Parse the error response body to get the actual error message
+    let errorMessage = res.status
+    try {
+      const errorData = await res.json()
+      if (errorData.message) {
+        errorMessage = errorData.message
+      }
+    } catch (parseError) {
+      // If parsing fails, keep the status code as error message
+    }
+    throw new Error(errorMessage)
   }
 }
 
@@ -178,12 +183,23 @@ export async function update(user, which = ['all']) {
   if (user.username === 'anonymous') {
     return
   }
+  // If which is not ["all"], filter user data to only include specified keys
+  let userData = user
+  if (which.length !== 1 || which[0] !== 'all') {
+    userData = {}
+    which.forEach(key => {
+      if (key in user) {
+        userData[key] = user[key]
+      }
+    })
+  }
+
   const apiPath = getApiPath('api/users', { id: user.id })
   await fetchURL(apiPath, {
     method: 'PUT',
     body: JSON.stringify({
       which: which,
-      data: user
+      data: userData
     })
   })
 }

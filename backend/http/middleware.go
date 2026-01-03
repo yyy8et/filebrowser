@@ -100,13 +100,18 @@ func withHashFileHelper(fn handleFunc) handleFunc {
 		if link.DisableFileViewer || reachedDownloadsLimit {
 			getContent = false
 		}
+		shareCreatedByUser, err := store.Users.Get(link.UserID)
+		if err != nil {
+			return http.StatusNotFound, fmt.Errorf("user for share no longer exists")
+		}
 		file, err := FileInfoFasterFunc(utils.FileOptions{
 			Path:                     utils.JoinPathAsUnix(link.Path, path),
 			Source:                   link.Source,
+			Username:                 shareCreatedByUser.Username,
 			Expand:                   true,
 			Content:                  getContent,
 			ExtractEmbeddedSubtitles: settings.Config.Integrations.Media.ExtractEmbeddedSubtitles && link.ExtractEmbeddedSubtitles,
-		}, nil)
+		}, store.Access)
 		if err != nil {
 			logger.Errorf("error fetching file info for share. hash=%v path=%v error=%v", hash, path, err)
 			return errToStatus(err), fmt.Errorf("error fetching share from server")
@@ -126,7 +131,7 @@ func withHashFileHelper(fn handleFunc) handleFunc {
 				link.IncrementUserDownload(data.user.Username)
 			}
 		}
-		file.Path = "/" + strings.TrimPrefix(strings.TrimPrefix(file.Path, link.Path), "/")
+		file.Path = utils.AddTrailingSlashIfNotExists(path)
 		// Set the file info in the `data` object
 		data.fileInfo = *file
 		// Call the next handler with the data
@@ -152,15 +157,6 @@ func extractUserFromExpiredToken(r *http.Request, data *requestContext) *users.U
 		user, err := store.Users.Get(uint(1))
 		if err != nil {
 			logger.Errorf("no auth: %v", err)
-			return nil
-		}
-		return user
-	}
-
-	proxyUser := r.Header.Get(config.Auth.Methods.ProxyAuth.Header)
-	if config.Auth.Methods.ProxyAuth.Enabled && proxyUser != "" {
-		user, err := setupProxyUser(r, data, proxyUser)
-		if err != nil {
 			return nil
 		}
 		return user
@@ -304,14 +300,7 @@ func userWithoutOTPhelper(fn handleFunc) handleFunc {
 		// Call the actual handler function with the updated context
 		username := r.URL.Query().Get("username")
 		password := r.Header.Get("X-Password")
-		proxyUser := r.Header.Get(config.Auth.Methods.ProxyAuth.Header)
-		if config.Auth.Methods.ProxyAuth.Enabled && proxyUser != "" {
-			user, err := setupProxyUser(r, &requestContext{}, proxyUser)
-			if err != nil {
-				return 401, errors.ErrUnauthorized
-			}
-			d.user = user
-		} else if username == "" || password == "" {
+		if username == "" || password == "" {
 			return withUserHelper(fn)(w, r, d)
 		} else {
 			if !config.Auth.Methods.PasswordAuth.Enabled {
@@ -353,41 +342,49 @@ func withUserHelper(fn handleFunc) handleFunc {
 			return fn(w, r, data)
 		}
 		proxyUser := r.Header.Get(config.Auth.Methods.ProxyAuth.Header)
-		if config.Auth.Methods.ProxyAuth.Enabled && proxyUser != "" {
-			user, err := setupProxyUser(r, data, proxyUser)
-			if err != nil {
-				return http.StatusForbidden, err
-			}
-			data.user = user
-			setUserInResponseWriter(w, data.user)
-			if fn == nil {
-				return http.StatusOK, nil
-			}
-			return fn(w, r, data)
-		}
+		isProxyUser := config.Auth.Methods.ProxyAuth.Enabled && proxyUser != ""
 		keyFunc := func(token *jwt.Token) (interface{}, error) {
 			return []byte(config.Auth.Key), nil
 		}
 		tokenString, err := extractToken(r)
-		if err != nil {
+		if err != nil && !isProxyUser {
 			return http.StatusUnauthorized, err
 		}
 		data.token = tokenString
 		var tk users.AuthToken
 		token, err := jwt.ParseWithClaims(tokenString, &tk, keyFunc)
 		if err != nil {
+			if isProxyUser {
+				return getProxyUser(w, r, data, fn, proxyUser)
+			}
+			// JWT library automatically validates expiration - if expired, it returns an error
 			return http.StatusUnauthorized, fmt.Errorf("error processing token, %v", err)
 		}
 		if !token.Valid {
 			return http.StatusUnauthorized, fmt.Errorf("invalid token")
 		}
-		if auth.IsRevokedApiKey(data.token) || tk.Expires < time.Now().Unix() {
-			return http.StatusUnauthorized, fmt.Errorf("token expired or revoked")
+		if auth.IsRevokedApiKey(data.token) {
+			if isProxyUser {
+				return getProxyUser(w, r, data, fn, proxyUser)
+			}
+			return http.StatusUnauthorized, fmt.Errorf("token revoked")
 		}
-		// Check if the token is about to expire and send a header to renew it
-		if tk.Expires < time.Now().Add(time.Minute*30).Unix() {
+		// ExpiresAt should always be set in valid tokens created by our system
+		// If it's nil, the token is invalid
+		if tk.ExpiresAt == nil {
+			return http.StatusUnauthorized, fmt.Errorf("invalid token: missing expiration")
+		}
+		// Check if token is about to expire for renewal header
+		if tk.ExpiresAt.Unix() < time.Now().Add(time.Minute*30).Unix() {
 			w.Header().Add("X-Renew-Token", "true")
-		} // Retrieve the user from the store and store it in the context
+		}
+		// Check if token is minimal/stateful (no BelongsTo in claim)
+		if tk.BelongsTo == 0 {
+			tk.BelongsTo, err = getUserFromApiToken(data.token)
+			if err != nil {
+				return http.StatusUnauthorized, err
+			}
+		}
 		data.user, err = store.Users.Get(tk.BelongsTo)
 		if err != nil {
 			logger.Errorf("Failed to get user with ID %v: %v", tk.BelongsTo, err)
@@ -403,6 +400,34 @@ func withUserHelper(fn handleFunc) handleFunc {
 		}
 		return fn(w, r, data)
 	}
+}
+
+func getProxyUser(w http.ResponseWriter, r *http.Request, data *requestContext, fn handleFunc, proxyUser string) (int, error) {
+	// proxy user logic
+	user, err := setupProxyUser(r, data, proxyUser)
+	if err != nil {
+		return http.StatusForbidden, err
+	}
+	data.user = user
+	setUserInResponseWriter(w, data.user)
+	if data.user.Username == "" {
+		return http.StatusForbidden, errors.ErrUnauthorized
+	}
+	// Generate a token for proxy users if they don't have one
+	if data.token == "" {
+		expires := time.Hour * time.Duration(config.Auth.TokenExpirationHours)
+		signed, err := makeSignedTokenAPI(user, "WEB_TOKEN_"+utils.InsecureRandomIdentifier(4), expires, user.Permissions, false)
+		if err != nil {
+			logger.Errorf("Failed to generate token for proxy user %s: %v", proxyUser, err)
+			return http.StatusInternalServerError, fmt.Errorf("failed to generate token")
+		}
+		data.token = signed.Key
+	}
+	// Call the handler function, passing in the context (or return OK if no handler)
+	if fn == nil {
+		return http.StatusOK, nil
+	}
+	return fn(w, r, data)
 }
 
 // Middleware to ensure the user is either the requested user or an admin

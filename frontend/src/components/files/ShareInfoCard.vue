@@ -25,15 +25,7 @@
             <strong>{{ $t("prompts.size", { suffix: ":" }) }}</strong> {{ humanSize }}
             <!-- eslint-disable-line @intlify/vue-i18n/no-raw-text -->
           </div>
-
-          <div v-if="!shareInfo.disableDownload" class="share__box__element share__box__center">
-            <button class="button button--flat clickable" @click="goToLink()"> {{ $t("buttons.download") }} </button>
-          </div>
         </div>
-
-      </div>
-      <div v-if="req.type" class="share__box__element share__box__center">
-        <qrcode-vue class="qrcode" :value="getLink(false)" size="200" level="M"></qrcode-vue>
       </div>
     </div>
   </div>
@@ -44,14 +36,9 @@ import { publicApi } from "@/api";
 import { state, getters } from "@/store";
 import { getHumanReadableFilesize } from "@/utils/filesizes";
 import { getTypeInfo } from "@/utils/mimetype";
-import QrcodeVue from "qrcode.vue";
-import { shareInfo } from "@/utils/constants";
 
 export default {
   name: "ShareInfo",
-  components: {
-    QrcodeVue,
-  },
   props: {
     hash: {
       type: String,
@@ -68,38 +55,43 @@ export default {
   },
   computed: {
     showShareInfo() {
-      if (shareInfo.shareType !== 'normal') {
+      // Don't show file/folder info if req is not loaded or empty
+      if (!state.req || !state.req.name) {
         return false;
       }
-      if (!shareInfo.isPasswordProtected) {
+      if (state.shareInfo?.shareType !== 'normal') {
+        return false;
+      }
+      if (!state.shareInfo?.isPasswordProtected) {
         return true
       }
       return state.share.passwordValid
     },
     getShareBanner() {
-      if (this.shareInfo.banner.startsWith("http")) {
-        return this.shareInfo.banner;
+      if (state.shareInfo?.banner.startsWith("http")) {
+        return state.shareInfo?.banner;
       }
-      return publicApi.getDownloadURL(state.share, [this.shareInfo.banner]);
+      return publicApi.getDownloadURL(state.share, [state.shareInfo?.banner]);
     },
     shareInfo() {
-      return shareInfo;
+      return state.shareInfo;
     },
     req() {
       return state.req;
     },
     humanSize() {
-      if (!state.req.modified) return "";
+      if (!state.req || !state.req.modified) return "";
       if (state.req.type == "directory") {
         return state.req.items.length + " items (" + getHumanReadableFilesize(state.req.size) + ")";
       }
       return getHumanReadableFilesize(state.req.size);
     },
     humanTime() {
-      if (!state.req.modified) return "";
+      if (!state.req || !state.req.modified) return "";
       return getters.getTime(state.req.modified);
     },
     modTime() {
+      if (!state.req || !state.req.modified) return "";
       return new Date(Date.parse(state.req.modified)).toLocaleString();
     },
     isImage() {
@@ -114,17 +106,6 @@ export default {
     },
   },
   methods: {
-    goToLink() {
-      window.open(this.getLink(false), "_blank");
-    },
-    getLink(inline = false) {
-      return publicApi.getDownloadURL({
-        path: "/",
-        hash: state.share.hash,
-        token: state.share.token,
-        inline: inline,
-      }, [state.req.path]);
-    },
   },
 };
 </script>

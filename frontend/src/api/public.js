@@ -1,8 +1,7 @@
 import { adjustedData } from "./utils";
 import { notify } from "@/notify";
-import { getApiPath, getPublicApiPath, encodedPath, doubleEncode } from "@/utils/url.js";
-import { globalVars,shareInfo } from "@/utils/constants";
-import { state, mutations } from "@/store";
+import { getPublicApiPath, encodedPath, doubleEncode } from "@/utils/url.js";
+import { state } from "@/store";
 
 // ============================================================================
 // PUBLIC API ENDPOINTS (hash-based authentication)
@@ -92,36 +91,28 @@ export function getPreviewURL(path,size="small") {
   }
 }
 
-// Get the shareable URL for a share
-/**
- * @param {{ hash: string }} share
- * @returns {string}
- */
-export function getShareURL(share) {
-  if (globalVars.externalUrl) {
-    const apiPath = getApiPath(`public/share/${share.hash}`)
-    return globalVars.externalUrl + apiPath;
-  }
-  return window.origin + getApiPath(`public/share/${share.hash}`);
-}
-
-
 export function post(
   hash,
   path,
   content = "",
   overwrite = false,
   onupload,
-  headers = {}
+  headers = {},
+  isDir = false
 ) {
   if (!hash || hash === undefined || hash === null) {
     throw new Error('no hash provided')
+  }
+  let sharePassword = localStorage.getItem("sharepass:" + hash);
+  if (sharePassword) {
+    headers["X-SHARE-PASSWORD"] = sharePassword;
   }
   try {
     const apiPath = getPublicApiPath("resources", {
       targetPath: doubleEncode(path),
       hash: hash,
       override: overwrite,
+      ...(isDir && { isDir: 'true' })
     });
 
     const request = new XMLHttpRequest();
@@ -130,7 +121,6 @@ export function post(
     for (const header in headers) {
       request.setRequestHeader(header, headers[header]);
     }
-
     if (typeof onupload === "function") {
       request.upload.onprogress = (event) => {
         if (event.lengthComputable) {
@@ -179,16 +169,19 @@ export function post(
   }
 }
 
-async function resourceAction(path, method, content) {
-  if (!shareInfo.isValid) {
-    throw new Error('invalid share')
-  }
+async function resourceAction(hash, path, method, content, token = "") {
   try {
+    let headers = {};
+    let sharePassword = localStorage.getItem("sharepass:" + hash);
+    if (sharePassword) {
+      headers["X-SHARE-PASSWORD"] = sharePassword;
+    }
     path = doubleEncode(path)
-    const apiPath = getPublicApiPath('resources', { path, hash: shareInfo.hash, token: shareInfo.token })
+    const apiPath = getPublicApiPath('resources', { path, hash: hash, token: token })
     const response = await fetch(apiPath, {
       method,
       body: content,
+      headers,
     });
     if (!response.ok) {
       const error = new Error(response.statusText);
@@ -212,31 +205,22 @@ async function resourceAction(path, method, content) {
   }
 }
 
-export async function remove(path) {
-  if (!shareInfo.isValid) {
-    throw new Error('invalid share')
-  }
+export async function remove(hash, path) {
   try {
-    return await resourceAction(path, 'DELETE')
+    return await resourceAction(hash, path, 'DELETE')
   } catch (err) {
     notify.showError(err.message || 'Error deleting resource')
     throw err
   }
 }
 
-export async function put(path, content = '') {
-  if (!shareInfo.isValid) {
-    throw new Error('invalid share')
-  }
-  try {
-    return await resourceAction(path, 'PUT', content)
-  } catch (err) {
-    notify.showError(err.message || 'Error putting resource')
-    throw err
-  }
+export async function put(hash, path, content = '') {
+  // resourceAction already handles error notification, just propagate
+  return await resourceAction(hash, path, 'PUT', content)
 }
 
 export async function moveCopy(
+  hash,
   items,
   action = 'copy',
   overwrite = false,
@@ -246,7 +230,7 @@ export async function moveCopy(
     overwrite: overwrite,
     action: action,
     rename: rename,
-    hash: shareInfo.hash
+    hash: hash
   }
   try {
     // Create an array of fetch calls
@@ -272,16 +256,19 @@ export async function moveCopy(
 
     // Await all promises and ensure errors propagate
     await Promise.all(promises)
-    setTimeout(() => {
-      notify.showSuccess(
-        action === 'copy' ? 'Resources copied successfully' : 'Resources moved successfully'
-      )
-    }, 125);
-    setTimeout(() => {
-      mutations.setReload(true);
-    }, 125);
   } catch (err) {
-    notify.showError(err.message || 'Error moving/copying resources')
+    console.error(err.message || 'Error moving/copying resources')
     throw err // Re-throw the error to propagate it back to the caller
+  }
+}
+
+export async function getShareInfo(hash) {
+  try {
+    const apiPath = getPublicApiPath('shareinfo', { hash: hash })
+    const response = await fetch(apiPath)
+    return response.json()
+  } catch (err) {
+    notify.showError(err.message || 'Error getting share info')
+    throw err
   }
 }

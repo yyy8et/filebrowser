@@ -1,6 +1,6 @@
 import { fetchURL, adjustedData } from './utils'
 import { getApiPath, doubleEncode, getPublicApiPath } from '@/utils/url.js'
-import { mutations } from '@/store'
+import { state } from '@/store'
 import { notify } from '@/notify'
 import { globalVars } from '@/utils/constants'
 
@@ -77,15 +77,11 @@ export async function put(source, path, content = '') {
   if (!source) {
     throw new Error('no source provided')
   }
-  try {
-    return await resourceAction(source, path, 'PUT', content)
-  } catch (err) {
-    notify.showError(err.message || 'Error putting resource')
-    throw err
-  }
+  // resourceAction already handles error notification, just propagate
+  return await resourceAction(source, path, 'PUT', content)
 }
 
-export function download(format, files, shareHash = "") {
+export async function download(format, files, shareHash = "") {
   if (format !== 'zip') {
     format = 'tar.gz'
   }
@@ -101,17 +97,27 @@ export function download(format, files, shareHash = "") {
   const apiPath = getApiPath(shareHash == "" ? 'api/raw' : 'public/api/raw', {
     files: fileargs,
     algo: format,
-    hash: shareHash
+    hash: shareHash,
+    ...(state.share.token && { token: state.share.token }),
+    sessionId: state.sessionId
   })
   const url = window.origin + apiPath
 
-  // Create a temporary <a> element to trigger the download
+  // Create a direct link and trigger the download
+  // This allows the browser to handle the download natively with:
+  // - Native download progress indicator
+  // - Shows up in browser's download menu
+  // - Doesn't load entire file into memory first
   const link = document.createElement('a')
   link.href = url
-  link.setAttribute('download', '') // Ensures it triggers a download
+  link.style.display = 'none'
   document.body.appendChild(link)
   link.click()
-  document.body.removeChild(link) // Clean up
+  
+  // Clean up after a short delay
+  setTimeout(() => {
+    document.body.removeChild(link)
+  }, 100)
 }
 
 export function post(
@@ -120,7 +126,8 @@ export function post(
   content = "",
   overwrite = false,
   onupload,
-  headers = {}
+  headers = {},
+  isDir = false
 ) {
   if (!source || source === undefined || source === null) {
     throw new Error('no source provided')
@@ -130,6 +137,7 @@ export function post(
       path: doubleEncode(path),
       source: doubleEncode(source),
       override: overwrite,
+      ...(isDir && { isDir: 'true' })
     });
 
     const request = new XMLHttpRequest();
@@ -222,14 +230,6 @@ export async function moveCopy(
 
     // Await all promises and ensure errors propagate
     await Promise.all(promises)
-    setTimeout(() => {
-      notify.showSuccess(
-        action === 'copy' ? 'Resources copied successfully' : 'Resources moved successfully'
-      )
-    }, 125);
-    setTimeout(() => {
-      mutations.setReload(true);
-    }, 125);
   } catch (err) {
     notify.showError(err.message || 'Error moving/copying resources')
     throw err // Re-throw the error to propagate it back to the caller

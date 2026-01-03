@@ -13,6 +13,7 @@ server:
       config:
         private: true
         defaultEnabled: true
+
 frontend:
   name: "Graham's Filebrowser"
   disableDefaultLinks: true
@@ -20,3 +21,5 @@ frontend:
     - text: "A playwright test"
       url: "https://playwright.dev/"
       title: "Playwright"
+  styling:
+    disableEventThemes: true

@@ -1,34 +1,29 @@
 <template>
-  <div>
-    <div
-      v-show="showOverlay"
-      @contextmenu.prevent="onOverlayRightClick"
-      @click="resetPrompts"
-      class="overlay"
-    ></div>
+  <div >
+    <div v-show="showOverlay" @contextmenu.prevent="onOverlayRightClick" @click="resetPrompts" class="overlay"></div>
     <div v-if="progress" class="progress">
       <div v-bind:style="{ width: this.progress + '%' }"></div>
     </div>
     <defaultBar :class="{ 'dark-mode-header': isDarkMode }"></defaultBar>
     <sidebar></sidebar>
-    <Scrollbar
-      id="main"
-      :class="{
-        'dark-mode': isDarkMode,
-        moveWithSidebar: moveWithSidebar,
-        'remove-padding-top': isOnlyOffice,
-        'main-padding': showPadding,
-        scrollable: scrollable,
-      }"
-    >
+    <Scrollbar id="main" :class="{
+      'dark-mode': isDarkMode,
+      moveWithSidebar: moveWithSidebar,
+      'remove-padding-top': isOnlyOffice,
+      'main-padding': showPadding,
+      scrollable: scrollable,
+    }">
       <router-view />
     </Scrollbar>
     <prompts :class="{ 'dark-mode': isDarkMode }"></prompts>
   </div>
   <Notifications />
-  <ContextMenu></ContextMenu>
+  <Toast :toasts="toasts" />
+  <StatusBar :class="{ moveWithSidebar: moveWithSidebar }" />
+  <ContextMenu v-if="showContextMenu"></ContextMenu>
   <Tooltip />
   <NextPrevious />
+  <PopupPreview v-if="popupEnabled" />
 </template>
 
 <script>
@@ -37,26 +32,31 @@ import Prompts from "@/components/prompts/Prompts.vue";
 import Sidebar from "@/components/sidebar/Sidebar.vue";
 import ContextMenu from "@/components/ContextMenu.vue";
 import Notifications from "@/components/Notifications.vue";
+import Toast from "@/components/Toast.vue";
+import StatusBar from "@/components/StatusBar.vue";
 import Scrollbar from "@/components/files/Scrollbar.vue";
 import Tooltip from "@/components/Tooltip.vue";
 import NextPrevious from "@/components/files/nextPrevious.vue";
+import PopupPreview from "@/components/files/PopupPreview.vue";
 import { filesApi } from "@/api";
 import { state, getters, mutations } from "@/store";
-import { events } from "@/notify";
+import { events, notify } from "@/notify";
 import { generateRandomCode } from "@/utils/auth";
-import { shareInfo } from "@/utils/constants";
 
 export default {
   name: "layout",
   components: {
     ContextMenu,
     Notifications,
+    Toast,
+    StatusBar,
     defaultBar,
     Sidebar,
     Prompts,
     Scrollbar,
     Tooltip,
     NextPrevious,
+    PopupPreview,
   },
   data() {
     return {
@@ -64,18 +64,23 @@ export default {
       dragCounter: 0,
       width: window.innerWidth,
       itemWeight: 0,
+      toasts: [],
     };
   },
   mounted() {
     window.addEventListener("resize", this.updateIsMobile);
-    if (shareInfo.themeColor != "") {
-      document.documentElement.style.setProperty("--primaryColor", shareInfo.themeColor);
+    if (getters.eventTheme() == "halloween") {
+      document.documentElement.style.setProperty("--primaryColor", "var(--icon-orange)");
     } else if (state.user.themeColor) {
       document.documentElement.style.setProperty("--primaryColor", state.user.themeColor);
     }
     if (!state.sessionId) {
       mutations.setSession(generateRandomCode(8));
     }
+    // Set up toast callback
+    notify.setToastUpdateCallback((toasts) => {
+      this.toasts = toasts;
+    });
     this.reEval()
     this.initialize();
   },
@@ -119,6 +124,16 @@ export default {
     currentView() {
       return getters.currentView();
     },
+    showContextMenu() {
+      // for now lets disable for tools view
+      return getters.currentView() != "tools"
+    },
+    popupEnabled() {
+      if (!state.user || state.user?.username == "") {
+        return false;
+      }
+      return state.user.preview.popup;
+    },
   },
   watch: {
     $route() {
@@ -133,7 +148,8 @@ export default {
       }
       const currentView = getters.currentView()
       mutations.setMultiple(false);
-      if (getters.currentPromptName() !== "success") {
+      const currentPrompt = getters.currentPromptName();
+      if (currentPrompt !== "success" && currentPrompt !== "generic") {
         mutations.closeHovers();
       }
       if (window.location.hash == "" && currentView == "listingView") {
@@ -153,6 +169,25 @@ export default {
         const maxUploads = state.user.fileLoading?.maxConcurrentUpload || 0;
         if (maxUploads > 10 || maxUploads < 1) {
           mutations.setMaxConcurrentUpload(1);
+        }
+        if ( state.user.showFirstLogin) {
+          mutations.showHover({
+            name: "generic",
+            props: {
+              title: this.$t("prompts.firstLoadTitle"),
+              body: this.$t("prompts.firstLoadBody"),
+              buttons: [
+                {
+                  label: this.$t("general.close"),
+                  action: () => {
+                    mutations.updateCurrentUser({
+                      showFirstLogin: false,
+                    });
+                  },
+                },
+              ],
+            },
+          });
         }
       }
     },
@@ -196,8 +231,7 @@ export default {
   display: none;
   /* Safari and Chrome */
 }
-
-#main > div {
+#main>div {
   height: 100%;
 }
 </style>

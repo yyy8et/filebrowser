@@ -2,13 +2,15 @@ import { mutations, state } from '@/store'
 import { notify } from '@/notify'
 import { globalVars } from '@/utils/constants'
 import { filesApi } from '@/api'
+import i18n from '@/i18n'
 
 let eventSrc = null
 let reconnectTimeout = null
 let isManuallyClosed = false
 let authenticationFailed = false
+let hasShownShutdownMessage = false
 
-async function updateSourceInfo () {
+async function updateSourceInfo() {
   try {
     const sourceinfo = await filesApi.sources()
     mutations.updateSourceInfo(sourceinfo)
@@ -17,7 +19,7 @@ async function updateSourceInfo () {
   }
 }
 
-function cleanup () {
+function cleanup() {
   if (eventSrc) {
     isManuallyClosed = true
     eventSrc.close()
@@ -25,7 +27,7 @@ function cleanup () {
   }
 }
 
-function scheduleReconnect () {
+function scheduleReconnect() {
   // Don't reconnect if authentication has failed
   if (authenticationFailed) {
     console.log('🚫 Not reconnecting due to authentication failure')
@@ -81,7 +83,7 @@ async function setupSSE () {
     if (!isAuthenticated) {
       console.log('🚫 Authentication failed, not setting up EventSource')
       authenticationFailed = true
-      notify.showError('Authentication failed. Please refresh the page to log in again.')
+      notify.showError(i18n.global.t('events.authenticationFailed'))
       return
     }
   }
@@ -95,13 +97,15 @@ async function setupSSE () {
       console.log('✅ SSE connected')
     }
     if (state.realtimeDownCount > 1) {
-      notify.showSuccess('Reconnected to server.')
+      notify.showSuccessToast(i18n.global.t('events.reconnected'))
     }
     clearReconnect()
     mutations.setRealtimeActive(true)
     updateSourceInfo()
     // Reset authentication failure flag on successful connection
     authenticationFailed = false
+    // Reset shutdown message flag on successful reconnection
+    hasShownShutdownMessage = false
   }
 
   eventSrc.onmessage = event => {
@@ -127,7 +131,7 @@ async function setupSSE () {
 
     // Original notification logic - only show error after multiple failures
     if (state.realtimeDownCount == 2 && !isManuallyClosed) {
-      notify.showError('The connection to server was lost. Trying to reconnect...')
+      notify.showErrorToast(i18n.global.t('events.connectionLost'))
     }
     scheduleReconnect()
   }
@@ -139,11 +143,24 @@ export function startSSE () {
   setupSSE()
 }
 
+export function startOnlyOfficeSSE () {
+  // Reset authentication failure flag when starting SSE
+  authenticationFailed = false
+  setupSSE()
+}
+
+export function stopSSE () {
+  cleanup()
+}
+
 async function eventRouter (eventType, message) {
   switch (eventType) {
     case 'notification':
       if (message === 'the server is shutting down') {
-        notify.showError('Server is shutting down. Reconnecting...')
+        if (!hasShownShutdownMessage) {
+          notify.showErrorToast(i18n.global.t('events.serverShutdown'))
+          hasShownShutdownMessage = true
+        }
         mutations.setRealtimeActive(false)
         cleanup()
         scheduleReconnect()
@@ -155,17 +172,35 @@ async function eventRouter (eventType, message) {
       break
 
     case 'sourceUpdate':
-      mutations.updateSourceInfo(message)
+      // Parse the JSON string before passing to updateSourceInfo
+      try {
+        const parsedMessage = JSON.parse(message)
+        mutations.updateSourceInfo(parsedMessage)
+      } catch (err) {
+        console.error('Error parsing sourceUpdate message:', err, message)
+      }
       break
 
     case 'acknowledge':
       if (!state.realtimeActive) {
-        notify.showSuccess('Reconnected to server.')
+        notify.showSuccessToast(i18n.global.t('events.reconnected'))
       }
       mutations.setRealtimeActive(true)
+      break
+
+    case 'onlyOfficeLog':
+      // Dispatch custom event for OnlyOffice logs
+      try {
+        // message is already a parsed object, not a JSON string
+        const logData = message
+        window.dispatchEvent(new CustomEvent('onlyOfficeLogEvent', { detail: logData }))
+      } catch (error) {
+        console.error('Error dispatching OnlyOffice log event:', error)
+      }
       break
 
     default:
       console.log('Unknown SSE event:', eventType, message)
   }
 }
+

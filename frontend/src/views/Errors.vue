@@ -1,5 +1,5 @@
 <template>
-  <div>
+  <div class="error-message">
     <h2 class="message">
       <i class="material-icons">{{ info.icon }}</i>
       <span>{{ $t(info.message) }}</span>
@@ -12,6 +12,10 @@ const errors = {
   0: {
     icon: "cloud_off",
     message: "errors.connection",
+  },
+  401: {
+    icon: "error",
+    message: "errors.forbidden",
   },
   403: {
     icon: "error",

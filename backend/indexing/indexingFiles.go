@@ -30,36 +30,60 @@ type actionConfig struct {
 	IsRoutineScan bool // whether this is a routine/scheduled scan (vs initial indexing)
 }
 
+// ScannerInfo is the exposed scanner information for the client
+type ScannerInfo struct {
+	Path            string    `json:"path"`
+	IsRoot          bool      `json:"isRoot"`
+	LastScanned     time.Time `json:"lastScanned"`
+	Complexity      uint      `json:"complexity"` // 0-10 scale: 0=unknown, 1=simple, 2-6=normal, 7-9=complex, 10=highlyComplex
+	CurrentSchedule int       `json:"currentSchedule"`
+	QuickScanTime   int       `json:"quickScanTime"`
+	FullScanTime    int       `json:"fullScanTime"`
+	NumDirs         uint64    `json:"numDirs"`
+	NumFiles        uint64    `json:"numFiles"`
+}
+
 // reduced index is json exposed to the client
 type ReducedIndex struct {
-	IdxName         string      `json:"name"`
-	DiskUsed        uint64      `json:"used"`
-	DiskTotal       uint64      `json:"total"`
-	Status          IndexStatus `json:"status"`
-	NumDirs         uint64      `json:"numDirs"`
-	NumFiles        uint64      `json:"numFiles"`
-	NumDeleted      uint64      `json:"numDeleted"`
-	LastIndexed     time.Time   `json:"-"`
-	LastIndexedUnix int64       `json:"lastIndexedUnixTime"`
-	QuickScanTime   int         `json:"quickScanDurationSeconds"`
-	FullScanTime    int         `json:"fullScanDurationSeconds"`
-	Assessment      string      `json:"assessment"`
+	IdxName         string         `json:"name"`
+	DiskUsed        uint64         `json:"used"`
+	DiskTotal       uint64         `json:"total"`
+	Status          IndexStatus    `json:"status"`
+	NumDirs         uint64         `json:"numDirs"`
+	NumFiles        uint64         `json:"numFiles"`
+	NumDeleted      uint64         `json:"numDeleted"`
+	LastIndexed     time.Time      `json:"-"`
+	LastIndexedUnix int64          `json:"lastIndexedUnixTime"`
+	QuickScanTime   int            `json:"quickScanDurationSeconds"`
+	FullScanTime    int            `json:"fullScanDurationSeconds"`
+	Complexity      uint           `json:"complexity"` // 0-10 scale: 0=unknown, 1=simple, 2-6=normal, 7-9=complex, 10=highlyComplex
+	Scanners        []*ScannerInfo `json:"scanners,omitempty"`
 }
 type Index struct {
 	ReducedIndex
-	CurrentSchedule            int `json:"-"`
-	settings.Source            `json:"-"`
-	Directories                map[string]*iteminfo.FileInfo `json:"-"`
-	DirectoriesLedger          map[string]struct{}           `json:"-"`
-	runningScannerCount        int                           `json:"-"`
-	SmartModifier              time.Duration                 `json:"-"`
-	FilesChangedDuringIndexing bool                          `json:"-"`
-	mock                       bool
-	mu                         sync.RWMutex
-	wasIndexed                 bool
-	FoundHardLinks             map[string]uint64   `json:"-"` // hardlink path -> size
-	processedInodes            map[uint64]struct{} `json:"-"`
-	totalSize                  uint64              `json:"-"`
+	settings.Source `json:"-"`
+
+	// Shared state (protected by mu)
+	Directories       map[string]*iteminfo.FileInfo `json:"-"`
+	DirectoriesLedger map[string]struct{}           `json:"-"`
+	FoundHardLinks    map[string]uint64             `json:"-"` // hardlink path -> size
+	processedInodes   map[uint64]struct{}           `json:"-"`
+	totalSize         uint64                        `json:"-"`
+	previousTotalSize uint64                        `json:"-"` // Track previous totalSize for change detection
+
+	// Scanner management (new multi-scanner system)
+	scanners             map[string]*Scanner `json:"-"` // path -> scanner
+	scanMutex            sync.Mutex          `json:"-"` // Global scan mutex - only one scanner runs at a time
+	activeScannerPath    string              `json:"-"` // Which scanner is currently running (for logging/status)
+	runningScannerCount  int                 `json:"-"` // Tracks active scanners
+	lastRootScanTime     time.Time           `json:"-"` // Last time root scanner completed - child scanners wait for this
+	initialScanStartTime time.Time           `json:"-"` // When initial multi-scanner indexing started
+	hasLoggedInitialScan bool                `json:"-"` // Whether we've logged the first complete round
+
+	// Control
+	mock       bool
+	mu         sync.RWMutex
+	wasIndexed bool
 }
 
 var (
@@ -99,14 +123,13 @@ func Initialize(source *settings.Source, mock bool) {
 	newIndex.ReducedIndex = ReducedIndex{
 		Status:     "indexing",
 		IdxName:    source.Name,
-		Assessment: "unknown",
+		Complexity: 0, // 0 = unknown until first scan completes
 	}
 	indexes[newIndex.Name] = &newIndex
 	indexesMutex.Unlock()
 	if !newIndex.Config.DisableIndexing {
-		time.Sleep(time.Second)
 		logger.Infof("initializing index: [%v]", newIndex.Name)
-		newIndex.RunIndexing("/", false)
+		// Start multi-scanner system (each scanner will do its own initial scan)
 		go newIndex.setupIndexingScanners()
 	} else {
 		newIndex.Status = "ready"
@@ -121,10 +144,8 @@ func (idx *Index) indexDirectoryWithOptions(adjustedPath string, config actionCo
 
 // Define a function to recursively index files and directories
 func (idx *Index) indexDirectory(adjustedPath string, config actionConfig) error {
-	// Normalize path to always have trailing slash (except for root which is just "/")
-	if adjustedPath != "/" {
-		adjustedPath = strings.TrimSuffix(adjustedPath, "/") + "/"
-	}
+	// Normalize path to always have trailing slash
+	adjustedPath = utils.AddTrailingSlashIfNotExists(adjustedPath)
 	realPath := strings.TrimRight(idx.Path, "/") + adjustedPath
 	// Open the directory
 	dir, err := os.Open(realPath)
@@ -169,9 +190,8 @@ func (idx *Index) indexDirectory(adjustedPath string, config actionConfig) error
 	// recursively check cached dirs for mod time changes as well
 	if config.Recursive {
 		if modChange {
-			idx.mu.Lock()
-			idx.FilesChangedDuringIndexing = true
-			idx.mu.Unlock()
+			// Mark files as changed in the active scanner
+			idx.markFilesChanged()
 		} else if config.Quick {
 			for _, item := range cacheDirItems {
 				subConfig := actionConfig{
@@ -214,27 +234,21 @@ func (idx *Index) GetFsDirInfo(adjustedPath string) (*iteminfo.FileInfo, error) 
 	}
 
 	if !dirInfo.IsDir() {
+		realSize, _ := idx.handleFile(dirInfo, adjustedPath, realPath)
+		size := int64(realSize)
 		fileInfo := iteminfo.FileInfo{
 			Path: adjustedPath,
 			ItemInfo: iteminfo.ItemInfo{
 				Name:    filepath.Base(originalPath),
-				Size:    dirInfo.Size(),
+				Size:    size,
 				ModTime: dirInfo.ModTime(),
 			},
 		}
 		fileInfo.DetectType(realPath, false)
-
-		// Set HasPreview flags using consolidated helper
 		setFilePreviewFlags(&fileInfo.ItemInfo, realPath)
-
 		return &fileInfo, nil
 	}
-
-	// Normalize directory path to always have trailing slash
-	if adjustedPath != "/" {
-		adjustedPath = strings.TrimSuffix(adjustedPath, "/") + "/"
-	}
-	// adjustedPath is already normalized with trailing slash
+	adjustedPath = utils.AddTrailingSlashIfNotExists(adjustedPath)
 	combinedPath := adjustedPath
 	var response *iteminfo.FileInfo
 	response, err = idx.GetDirInfo(dir, dirInfo, realPath, adjustedPath, combinedPath, actionConfig{
@@ -251,11 +265,10 @@ func (idx *Index) GetFsDirInfo(adjustedPath string) (*iteminfo.FileInfo, error) 
 		found := false
 		for _, item := range response.Files {
 			if item.Name == baseName {
-				// Clean path to remove trailing slashes before joining
 				filePath := strings.TrimSuffix(adjustedPath, "/") + "/" + item.Name
 				response = &iteminfo.FileInfo{
 					Path:     filePath,
-					ItemInfo: item,
+					ItemInfo: item.ItemInfo,
 				}
 				found = true
 				continue
@@ -271,15 +284,13 @@ func (idx *Index) GetFsDirInfo(adjustedPath string) (*iteminfo.FileInfo, error) 
 }
 
 func (idx *Index) GetDirInfo(dirInfo *os.File, stat os.FileInfo, realPath, adjustedPath, combinedPath string, config actionConfig) (*iteminfo.FileInfo, error) {
-	// Ensure combinedPath has exactly one trailing slash to prevent double slashes in subdirectory paths
-	combinedPath = strings.TrimRight(combinedPath, "/") + "/"
-	// Read directory contents
+	combinedPath = utils.AddTrailingSlashIfNotExists(combinedPath)
 	files, err := dirInfo.Readdir(-1)
 	if err != nil {
 		return nil, err
 	}
 	var totalSize int64
-	fileInfos := []iteminfo.ItemInfo{}
+	fileInfos := []iteminfo.ExtendedItemInfo{}
 	dirInfos := []iteminfo.ItemInfo{}
 	hasPreview := false
 	if !config.Recursive {
@@ -288,8 +299,6 @@ func (idx *Index) GetDirInfo(dirInfo *os.File, stat os.FileInfo, realPath, adjus
 			hasPreview = realDirInfo.HasPreview
 		}
 	}
-
-	// Process each file and directory in the current directory
 	for _, file := range files {
 		hidden := isHidden(file, idx.Path+combinedPath)
 		isDir := iteminfo.IsDirectory(file)
@@ -300,14 +309,11 @@ func (idx *Index) GetDirInfo(dirInfo *os.File, stat os.FileInfo, realPath, adjus
 				continue
 			}
 		}
-		// Skip logic based on mode
 		if config.CheckViewable {
-			// When checking viewable items: skip if shouldSkip=true AND not viewable
 			if idx.shouldSkip(isDir, hidden, fullCombined, baseName, config) && !idx.IsViewable(isDir, fullCombined) {
 				continue
 			}
 		} else {
-			// Normal indexing mode: skip if shouldSkip=true
 			if idx.shouldSkip(isDir, hidden, fullCombined, baseName, config) {
 				continue
 			}
@@ -320,7 +326,6 @@ func (idx *Index) GetDirInfo(dirInfo *os.File, stat os.FileInfo, realPath, adjus
 
 		if isDir {
 			dirPath := combinedPath + file.Name()
-			// Check NeverWatchPaths map - O(1) lookup for paths with neverWatch: true
 			if idx.wasIndexed && config.Recursive && idx.Config.ResolvedConditionals != nil {
 				if _, exists := idx.Config.ResolvedConditionals.NeverWatchPaths[fullCombined]; exists {
 					realDirInfo, exists := idx.GetMetadataInfo(dirPath, true)
@@ -334,11 +339,9 @@ func (idx *Index) GetDirInfo(dirInfo *os.File, stat os.FileInfo, realPath, adjus
 			if omitList[file.Name()] {
 				continue
 			}
-
 			if config.Recursive {
 				// clear for garbage collection
 				file = nil
-				// Recursively index the subdirectory
 				err = idx.indexDirectory(dirPath, config)
 				if err != nil {
 					logger.Errorf("Failed to index directory %s: %v", dirPath, err)
@@ -353,56 +356,49 @@ func (idx *Index) GetDirInfo(dirInfo *os.File, stat os.FileInfo, realPath, adjus
 			totalSize += itemInfo.Size
 			itemInfo.Type = "directory"
 			dirInfos = append(dirInfos, *itemInfo)
-			if config.Recursive {
+			if config.IsRoutineScan {
 				idx.NumDirs++
+				idx.incrementScannerDirs()
 			}
 		} else {
-			size, shouldCountSize := idx.handleFile(file, fullCombined)
-			itemInfo.DetectType(realPath+"/"+file.Name(), false)
-			// Set HasPreview flags - use cached metadata optimization only when indexing is enabled
+			realFilePath := realPath + "/" + file.Name()
+			size, shouldCountSize := idx.handleFile(file, fullCombined, realFilePath)
+			itemInfo.DetectType(realFilePath, false)
+			usedCachedPreview := false
 			if !idx.Config.DisableIndexing && config.Recursive {
-				// Optimization: For audio files during indexing, check if we can use cached album art info
 				simpleType := strings.Split(itemInfo.Type, "/")[0]
 				if simpleType == "audio" {
 					previousInfo, exists := idx.GetReducedMetadata(fullCombined, false)
 					if exists && time.Time.Equal(previousInfo.ModTime, file.ModTime()) {
-						// File unchanged - use cached album art info
+						// File unchanged - use cached album art info (whether true or false)
 						itemInfo.HasPreview = previousInfo.HasPreview
+						usedCachedPreview = true
 					}
 				}
 			}
-			// When indexing is disabled or CheckViewable mode, always check directly
-			setFilePreviewFlags(itemInfo, realPath+"/"+file.Name())
-
+			if !usedCachedPreview {
+				setFilePreviewFlags(itemInfo, realPath+"/"+file.Name())
+			}
 			itemInfo.Size = int64(size)
-
-			// Update parent folder preview status for images, videos, and audio with album art
-			// Use shared function to determine if this file type should bubble up to folder preview
 			if itemInfo.HasPreview && iteminfo.ShouldBubbleUpToFolderPreview(*itemInfo) {
 				hasPreview = true
 			}
-
-			fileInfos = append(fileInfos, *itemInfo)
+			extItemInfo := iteminfo.ExtendedItemInfo{
+				ItemInfo: *itemInfo,
+			}
+			fileInfos = append(fileInfos, extItemInfo)
 			if shouldCountSize {
 				totalSize += itemInfo.Size
 			}
-			if config.Recursive {
+			if config.IsRoutineScan {
 				idx.NumFiles++
+				idx.incrementScannerFiles()
 			}
 		}
 	}
-
 	if totalSize == 0 && idx.Config.Conditionals.ZeroSizeFolders {
 		return nil, errors.ErrNotIndexed
 	}
-
-	if adjustedPath == "/" {
-		idx.mu.Lock()
-		idx.DiskUsed = uint64(totalSize)
-		idx.mu.Unlock()
-	}
-
-	// Create FileInfo for the current directory (adjustedPath is already normalized with trailing slash)
 	dirFileInfo := &iteminfo.FileInfo{
 		Path:    adjustedPath,
 		Files:   fileInfos,
@@ -416,28 +412,21 @@ func (idx *Index) GetDirInfo(dirInfo *os.File, stat os.FileInfo, realPath, adjus
 		HasPreview: hasPreview,
 	}
 	dirFileInfo.SortItems()
-
-	// Metadata will be updated by the caller (indexDirectory or GetFsDirInfo)
 	return dirFileInfo, nil
 }
 
-func (idx *Index) recursiveUpdateDirSizes(childInfo *iteminfo.FileInfo, previousSize int64) {
+// RecursiveUpdateDirSizes updates parent directory sizes recursively up the tree
+func (idx *Index) RecursiveUpdateDirSizes(childInfo *iteminfo.FileInfo, previousSize int64) {
 	parentDir := utils.GetParentDirectoryPath(childInfo.Path)
-
 	parentInfo, exists := idx.GetMetadataInfo(parentDir, true)
 	if !exists || parentDir == "" {
 		return
 	}
-
-	// Calculate size delta and update parent
 	previousParentSize := parentInfo.Size
 	sizeDelta := childInfo.Size - previousSize
 	parentInfo.Size = previousParentSize + sizeDelta
-
 	idx.UpdateMetadata(parentInfo)
-
-	// Recursively update grandparents
-	idx.recursiveUpdateDirSizes(parentInfo, previousParentSize)
+	idx.RecursiveUpdateDirSizes(parentInfo, previousParentSize)
 }
 
 func (idx *Index) GetRealPath(relativePath ...string) (string, bool, error) {
@@ -448,12 +437,10 @@ func (idx *Index) GetRealPath(relativePath ...string) (string, bool, error) {
 	if ok && cached != "" {
 		return cached, isDir, nil
 	}
-	// Convert relative path to absolute path
 	absolutePath, err := filepath.Abs(joinedPath)
 	if err != nil {
 		return absolutePath, false, fmt.Errorf("could not get real path: %v, %s", joinedPath, err)
 	}
-	// Resolve symlinks and get the real path
 	realPath, isDir, err := iteminfo.ResolveSymlinks(absolutePath)
 	if err == nil {
 		RealPathCache.Set(joinedPath, realPath)
@@ -467,89 +454,71 @@ func (idx *Index) RefreshFileInfo(opts utils.FileOptions) error {
 		Quick:     false,
 		Recursive: opts.Recursive,
 	}
-
 	targetPath := opts.Path
 	if !opts.IsDir {
 		targetPath = idx.MakeIndexPath(filepath.Dir(targetPath))
 	}
-
-	// Get PREVIOUS metadata BEFORE indexing
 	previousInfo, previousExists := idx.GetMetadataInfo(targetPath, true)
 	var previousSize int64
 	if previousExists {
 		previousSize = previousInfo.Size
 	}
-
-	// Re-index the directory
 	err := idx.indexDirectoryWithOptions(targetPath, config)
 	if err != nil {
 		return err
 	}
-
-	// Get the NEW metadata after indexing
 	newInfo, exists := idx.GetMetadataInfo(targetPath, true)
 	if !exists {
 		return fmt.Errorf("file/folder does not exist in metadata: %s", targetPath)
 	}
-
-	// If size changed, propagate to parents
 	if previousSize != newInfo.Size {
-		idx.recursiveUpdateDirSizes(newInfo, previousSize)
+		idx.RecursiveUpdateDirSizes(newInfo, previousSize)
 	}
 
 	return nil
 }
 
 func isHidden(file os.FileInfo, srcPath string) bool {
-	// Check if the file starts with a dot (common on Unix systems)
 	if file.Name()[0] == '.' {
 		return true
 	}
-
 	if runtime.GOOS == "windows" {
 		return CheckWindowsHidden(filepath.Join(srcPath, file.Name()))
 	}
-
 	// Default behavior for non-Windows systems
 	return false
 }
 
 // setFilePreviewFlags determines if a file should have a preview based on its type
-// This consolidates the logic used in both GetFsDirInfo and GetDirInfo
 func setFilePreviewFlags(fileInfo *iteminfo.ItemInfo, realPath string) {
 	simpleType := strings.Split(fileInfo.Type, "/")[0]
-	ext := strings.ToLower(filepath.Ext(fileInfo.Name))
-	extWithoutPeriod := strings.TrimPrefix(ext, ".")
-
-	// Check if it's an image
-	if simpleType == "image" {
+	switch fileInfo.Type {
+	case "image/heic", "image/heif":
+		fileInfo.HasPreview = settings.CanConvertImage("heic")
+		return
+	}
+	switch simpleType {
+	case "image":
 		fileInfo.HasPreview = true
+		return
+	case "video":
+		ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(fileInfo.Name)), ".")
+		fileInfo.HasPreview = settings.CanConvertVideo(ext)
+		return
+	case "audio":
+		ext := strings.ToLower(filepath.Ext(fileInfo.Name))
+		hasArt := iteminfo.HasAlbumArt(realPath, ext)
+		fileInfo.HasPreview = hasArt
+		return
 	}
-
-	// Check for HEIC/HEIF
-	switch extWithoutPeriod {
-	case "heic", "heif":
-		if settings.CanConvertImage(extWithoutPeriod) {
-			fileInfo.HasPreview = true
-		}
-	}
-
-	// Check if it's a video
-	if simpleType == "video" && settings.CanConvertVideo(extWithoutPeriod) {
-		fileInfo.HasPreview = true
-	}
-
-	// Check for audio with album art (always check, don't rely on cache)
-	if simpleType == "audio" {
-		fileInfo.HasPreview = iteminfo.HasAlbumArt(realPath, ext)
-	}
-
 	// Check for office docs and PDFs
 	if settings.Config.Integrations.OnlyOffice.Secret != "" && iteminfo.IsOnlyOffice(fileInfo.Name) {
 		fileInfo.HasPreview = true
+		return
 	}
 	if iteminfo.HasDocConvertableExtension(fileInfo.Name, fileInfo.Type) {
 		fileInfo.HasPreview = true
+		return
 	}
 }
 
@@ -560,11 +529,9 @@ func (idx *Index) IsViewable(isDir bool, adjustedPath string) bool {
 	baseName := filepath.Base(strings.TrimSuffix(adjustedPath, "/"))
 
 	if isDir {
-		// Exact match (O(1))
 		if rule, exists := rules.FolderNames[baseName]; exists && rule.Viewable {
 			return true
 		}
-		// Prefix/suffix (O(n))
 		for _, rule := range rules.FolderPaths {
 			if strings.HasPrefix(adjustedPath, rule.FolderPath) && rule.Viewable {
 				return true
@@ -581,11 +548,9 @@ func (idx *Index) IsViewable(isDir bool, adjustedPath string) bool {
 			}
 		}
 	} else {
-		// Exact match (O(1))
 		if rule, exists := rules.FileNames[baseName]; exists && rule.Viewable {
 			return true
 		}
-		// Prefix/suffix (O(n))
 		for _, rule := range rules.FilePaths {
 			if strings.HasPrefix(adjustedPath, rule.FilePath) && rule.Viewable {
 				return true
@@ -613,22 +578,13 @@ func (idx *Index) shouldSkip(isDir bool, isHidden bool, fullCombined, baseName s
 	if fullCombined == "/" {
 		return false
 	}
-	// When indexing is disabled globally, behavior depends on the mode
 	if idx.Config.DisableIndexing {
-		// If checking viewable (filesystem access), don't skip - show everything from filesystem
-		if config.CheckViewable {
-			return false
-		}
-		// If indexing mode, skip everything
-		return true
+		return !config.CheckViewable
 	}
 
 	if isDir && config.IsRoutineScan {
-		// Check NeverWatch: Skip directories with index=true AND neverWatch=true during routine scans
-		// This allows them to be indexed once but never re-scanned
 		_, ok := rules.NeverWatchPaths[fullCombined]
 		if ok {
-			// skip scanning, but is viewable
 			return true
 		}
 	}
@@ -636,18 +592,13 @@ func (idx *Index) shouldSkip(isDir bool, isHidden bool, fullCombined, baseName s
 	if isDir {
 		if rule, ok := rules.FolderNames[baseName]; ok {
 			if _, ok := rules.FolderPaths[fullCombined]; !ok {
-				// create a rule so sub folders can be skipped
 				rules.FolderPaths[fullCombined] = rule
 			}
 			return true
 		}
-
-		// Check FolderPaths: Two-stage check for performance
-		// Stage 1: O(1) exact match (fast path for the folder itself)
 		if _, ok := rules.FolderPaths[fullCombined]; ok {
 			return true
 		}
-		// Stage 2: O(n) prefix match (for child folders)
 		for path := range rules.FolderPaths {
 			if strings.HasPrefix(fullCombined, path) {
 				return true
@@ -668,17 +619,12 @@ func (idx *Index) shouldSkip(isDir bool, isHidden bool, fullCombined, baseName s
 			}
 		}
 	} else {
-		// Check FileNames (exact match on base name) - O(1) lookup
 		if _, ok := rules.FileNames[baseName]; ok {
 			return true
 		}
-
-		// Check FilePaths: Two-stage check for performance
-		// Stage 1: O(1) exact match (fast path for the file itself)
 		if _, ok := rules.FilePaths[fullCombined]; ok {
 			return true
 		}
-		// Stage 2: O(n) prefix match (for files in excluded folders)
 		for path := range rules.FilePaths {
 			if strings.HasPrefix(fullCombined, path) {
 				return true
@@ -732,43 +678,6 @@ func (idx *Index) SetStatus(status IndexStatus) error {
 	return idx.SendSourceUpdateEvent()
 }
 
-func (idx *Index) handleFile(file os.FileInfo, fullCombined string) (size uint64, shouldCountSize bool) {
-	var realSize uint64
-	var nlink uint64 = 1
-	var ino uint64 = 0
-	canUseSyscall := false
-
-	if sys := file.Sys(); sys != nil {
-		realSize, nlink, ino, canUseSyscall = getFileDetails(sys)
-	}
-
-	if !canUseSyscall {
-		// Fallback for non-unix systems or if syscall info is unavailable
-		realSize = uint64(file.Size())
-	}
-
-	if nlink > 1 {
-		// It's a hard link
-		idx.mu.Lock()
-		defer idx.mu.Unlock()
-		if _, exists := idx.processedInodes[ino]; exists {
-			// Already seen, don't count towards global total, or directory total.
-			return realSize, false
-		}
-		// First time seeing this inode.
-		idx.processedInodes[ino] = struct{}{}
-		idx.FoundHardLinks[fullCombined] = realSize
-		idx.totalSize += realSize
-		return realSize, true // Count size for directory total.
-	}
-
-	// It's a regular file.
-	idx.mu.Lock()
-	idx.totalSize += realSize
-	idx.mu.Unlock()
-	return realSize, true // Count size.
-}
-
 // input should be non-index path.
 func (idx *Index) MakeIndexPath(path string) string {
 	if path == "." || strings.HasPrefix(path, "./") {
@@ -776,7 +685,7 @@ func (idx *Index) MakeIndexPath(path string) string {
 	}
 	path = strings.TrimPrefix(path, idx.Path)
 	path = idx.MakeIndexPathPlatform(path)
-	path = strings.TrimSuffix(path, "/") + "/"
+	path = utils.AddTrailingSlashIfNotExists(path)
 	return path
 }
 

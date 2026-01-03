@@ -1,16 +1,7 @@
 <template>
   <div>
-    <!-- Share Info Component -->
-    <ShareInfoCard
-      v-if="showShareInfo"
-      class="share-info-component"
-      :hash="share?.hash"
-      :token="share?.token"
-      :subPath="share?.subPath"
-    />
-
     <breadcrumbs v-if="showBreadCrumbs" :base="isShare ? `/share/${shareHash}` : undefined" />
-    <errors v-if="error && !(isShare && error.status === 401)" :errorCode="error.status" />
+    <errors v-if="error" :errorCode="error.status" />
     <component v-else-if="currentViewLoaded" :is="currentView"></component>
     <div v-else>
       <h2 class="message delayed">
@@ -19,16 +10,14 @@
           <div class="bounce2"></div>
           <div class="bounce3"></div>
         </div>
-        <span>{{ $t("files.loading") }}</span>
+        <span>{{ $t("general.loading", { suffix: "..." }) }}</span>
       </h2>
     </div>
   </div>
-  <PopupPreview v-if="popupEnabled" />
 </template>
 
 <script>
 import { filesApi, publicApi } from "@/api";
-import { notify } from "@/notify";
 import Breadcrumbs from "@/components/Breadcrumbs.vue";
 import Errors from "@/views/Errors.vue";
 import Preview from "@/views/files/Preview.vue";
@@ -41,10 +30,8 @@ import MarkdownViewer from "./files/MarkdownViewer.vue";
 import { state, mutations, getters } from "@/store";
 import { url } from "@/utils";
 import router from "@/router";
-import { globalVars, shareInfo } from "@/utils/constants";
-import PopupPreview from "@/components/files/PopupPreview.vue";
+import { globalVars } from "@/utils/constants";
 import { extractSourceFromPath } from "@/utils/url";
-import ShareInfoCard from "@/components/files/ShareInfoCard.vue";
 
 export default {
   name: "files",
@@ -58,8 +45,6 @@ export default {
     DocViewer,
     OnlyOfficeEditor,
     MarkdownViewer,
-    PopupPreview,
-    ShareInfoCard,
   },
   data() {
     return {
@@ -81,13 +66,7 @@ export default {
       return state.share;
     },
     showShareInfo() {
-      return getters.isShare() && state.isMobile && state.req.path == "/" && !shareInfo.disableShareCard;
-    },
-    popupEnabled() {
-      if (!state.user || state.user?.username == "") {
-        return false;
-      }
-      return state.user.preview.popup;
+      return getters.isShare() && state.isMobile && state.req.path == "/" && !state.shareInfo?.disableShareCard;
     },
     showBreadCrumbs() {
       return getters.showBreadCrumbs();
@@ -103,7 +82,35 @@ export default {
     },
   },
   created() {
+    if (getters.eventTheme() === "halloween" && !localStorage.getItem("seenHalloweenMessage")) {
+
+      mutations.showHover({
+        name: "generic",
+        props: {
+          title: this.$t("prompts.halloweenTitle"),
+          body: this.$t("prompts.halloweenBody"),
+          buttons: [
+            {
+              label: this.$t("general.close"),
+              action: () => {
+                localStorage.setItem("seenHalloweenMessage", "true");
+              },
+            },
+            {
+              label: this.$t("general.disable"),
+              action: () => {
+                mutations.disableEventThemes();
+                localStorage.setItem("seenHalloweenMessage", "true");
+              },
+              primary: true,
+            },
+          ],
+        },
+      });
+    }
+
     this.fetchData();
+
   },
   watch: {
     $route: "fetchData",
@@ -116,13 +123,6 @@ export default {
   mounted() {
     window.addEventListener("hashchange", this.scrollToHash);
     window.addEventListener("keydown", this.keyEvent);
-    if (getters.isInvalidShare()) {
-      // show message that share is invalid and don't do anything else
-      this.error = {
-        status: "share404",
-        message: "errors.shareNotFound",
-      };
-    }
   },
   beforeUnmount() {
     window.removeEventListener("keydown", this.keyEvent);
@@ -136,7 +136,7 @@ export default {
       // scroll to previous item either from location hash or from previousItemHashId state
       // prefers location hash
       const noHashChange = window.location.hash === this.lastHash
-      if (noHashChange && state.previousHistoryItem.name === "") return;
+      if (noHashChange && state.previousHistoryItem?.name === "") return;
       this.lastHash = window.location.hash;
       if (window.location.hash) {
         const rawHash = window.location.hash.slice(1);
@@ -149,8 +149,12 @@ export default {
         }
         scrollToId = url.base64Encode(encodeURIComponent(decodedName));
 
-      } else if (state.previousHistoryItem.name && state.previousHistoryItem.path === state.req.path && state.previousHistoryItem.source === state.req.source) {
+      } else if (state.previousHistoryItem?.name && state.previousHistoryItem.path === state.req.path && state.previousHistoryItem.source === state.req.source) {
         scrollToId = url.base64Encode(encodeURIComponent(state.previousHistoryItem.name));
+      }
+      // Don't call getElementById with empty string
+      if (!scrollToId || scrollToId.trim() === '') {
+        return;
       }
       const element = document.getElementById(scrollToId);
         if (element) {
@@ -167,7 +171,7 @@ export default {
         }
     },
     async fetchData() {
-      if (state.deletedItem || getters.isInvalidShare() || shareInfo.shareType == "upload") {
+      if (state.deletedItem) {
         return
       }
 
@@ -189,11 +193,6 @@ export default {
           await this.fetchFilesData();
         }
       } catch (e) {
-        if (e.message) {
-          notify.showError(e.message);
-        } else {
-          notify.showError(e);
-        }
         this.error = e;
         mutations.replaceRequest({});
         if (e.status === 404) {
@@ -205,6 +204,10 @@ export default {
           this.attemptedPasswordLogin = this.sharePassword !== "";
           // Reset password validation state on wrong password
           mutations.setShareData({ passwordValid: false });
+          // Clear error for upload shares so upload interface can be shown once password is correct
+          if (state.shareInfo?.shareType === "upload") {
+            this.error = null;
+          }
           this.showPasswordPrompt();
         } else {
           router.push({ name: "error" });
@@ -224,31 +227,114 @@ export default {
     },
 
     async fetchShareData() {
-      // Parse share route
+      const hash = getters.shareHash();
+      let shareInfo = await publicApi.getShareInfo(hash);
+      if (!shareInfo) {
+        // show message that share is invalid and don't do anything else
+        this.error = {
+          status: "share404",
+          message: "errors.shareNotFound",
+        };
+      }
+      shareInfo.hash = hash;
+      mutations.setShareInfo(shareInfo);
+      
+      // Parse share route to get shareHash and shareSubPath
       let urlPath = getters.routePath('public/share')
       let parts = urlPath.split("/");
       this.shareHash = parts[1]
       this.shareSubPath = "/" + parts.slice(2).join("/");
-
-      // Handle password
-      if (this.sharePassword === "") {
-        this.sharePassword = localStorage.getItem("sharepass:" + this.shareHash);
-      } else {
+      
+      // Check for password requirement (applies to both regular and upload shares)
+      if (shareInfo.hasPassword) {
+        if (this.sharePassword === "") {
+          this.sharePassword = localStorage.getItem("sharepass:" + this.shareHash);
+          if (this.sharePassword === null || this.sharePassword === "") {
+            this.showPasswordPrompt();
+            return;
+          }
+        }
+        // Store password in localStorage
         localStorage.setItem("sharepass:" + this.shareHash, this.sharePassword);
       }
+      
+      if (shareInfo.themeColor) {
+        document.documentElement.style.setProperty("--primaryColor", shareInfo.themeColor);
+      }
+
+      // Handle password (same for both regular and upload shares)
       if (this.sharePassword === null) {
         this.sharePassword = "";
+      }
+
+      // For upload shares, validate password on startup and return early
+      // Password validation happens via fetchPub call, which will throw 401 if incorrect
+      // A 501 error means browsing is disabled (expected for upload shares) and indicates auth succeeded
+      if (shareInfo.shareType == "upload") {
+        // Initialize password validation state
+        if (shareInfo.hasPassword) {
+          mutations.setShareData({ passwordValid: false });
+          try {
+            await publicApi.fetchPub(this.shareSubPath, this.shareHash, this.sharePassword, false);
+            // If we get here, password is valid (unlikely for upload shares, but handle it)
+            mutations.setShareData({ passwordValid: true });
+            this.error = null; // Clear any previous errors
+          } catch (e) {
+            // 501 means browsing is disabled for upload shares - this is expected and means auth succeeded
+            if (e.status === 501) {
+              // Password is valid, mark as validated
+              mutations.setShareData({ passwordValid: true });
+              this.error = null; // Clear any previous errors
+            } else if (e.status === 401) {
+              // Password is invalid, show prompt
+              this.attemptedPasswordLogin = true;
+              mutations.setShareData({ passwordValid: false });
+              this.showPasswordPrompt();
+              return;
+            } else {
+              // For other errors, re-throw to be handled by fetchData()
+              throw e;
+            }
+          }
+        } else {
+          // No password required, mark as validated
+          mutations.setShareData({ passwordValid: true });
+          this.error = null; // Clear any previous errors
+        }
+        return;
+      }
+
+      // For regular shares, validate password on startup (similar to upload shares)
+      if (shareInfo.hasPassword) {
+        mutations.setShareData({ passwordValid: false });
+        try {
+          await publicApi.fetchPub(this.shareSubPath, this.shareHash, this.sharePassword, false);
+          // Password is valid
+          mutations.setShareData({ passwordValid: true });
+          this.error = null; // Clear any previous errors
+        } catch (e) {
+          if (e.status === 401) {
+            // Password is invalid, show prompt
+            this.attemptedPasswordLogin = true;
+            mutations.setShareData({ passwordValid: false });
+            this.showPasswordPrompt();
+            return;
+          } else {
+            // For other errors, re-throw to be handled by fetchData()
+            throw e;
+          }
+        }
+      } else {
+        // No password required, mark as validated
+        mutations.setShareData({ passwordValid: true });
+        this.error = null; // Clear any previous errors
       }
 
       mutations.resetSelected();
       mutations.setMultiple(false);
 
-      if (shareInfo.singleFileShare) {
+      if (state.shareInfo?.singleFileShare) {
         mutations.setSidebarVisible(true);
-      }
-      // Initialize password validation state for password-protected shares
-      if (shareInfo.isPasswordProtected) {
-        mutations.setShareData({ passwordValid: false });
       }
       // Fetch share data
       let file = await publicApi.fetchPub(this.shareSubPath, this.shareHash, this.sharePassword);
@@ -298,6 +384,7 @@ export default {
     },
 
     async fetchFilesData() {
+
       if (!getters.isLoggedIn()) {
         return;
       }
@@ -313,13 +400,20 @@ export default {
         routePath == "/";
 
       // lets redirect if multiple sources and user went to /files/
-      if (state.serverHasMultipleSources && rootRoute) {
-        const targetPath = `/files/${state.sources.current}`;
-        // Prevent infinite loop by checking if we're already at the target path
-        if (routePath !== targetPath) {
-          router.push(targetPath);
-          return;
+      if (rootRoute) {
+        // Check if user has custom sidebar links with sources
+        let targetPath = `/files/${state.sources.current}`;
+        for (const link of state.user?.sidebarLinks || []) {
+          if (link.target.startsWith('/')) {
+            if (link.category !== 'source') {
+              continue;
+            }
+            targetPath = `/files/${link.sourceName}${link.target}`;
+            break;
+          }
         }
+        router.push(targetPath)
+        return;
       }
 
       const result = extractSourceFromPath(getters.routePath());
@@ -380,7 +474,6 @@ export default {
         }
         document.title = `${document.title} - ${res.name}`;
       } catch (e) {
-        notify.showError(e);
         this.error = e;
         mutations.replaceRequest({});
       } finally {

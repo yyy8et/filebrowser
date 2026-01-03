@@ -2,6 +2,7 @@ import { reactive } from 'vue';
 import { detectLocale } from "@/i18n";
 
 export const state = reactive({
+  disableEventThemes: eventTheme(),
   tooltip: {
     show: false,
     content: "",
@@ -29,7 +30,6 @@ export const state = reactive({
   editor: null,
   editorDirty: false,
   editorSaveHandler: null, // Function to save editor content
-  serverHasMultipleSources: false,
   realtimeActive: undefined,
   realtimeDownCount: 0,
   popupPreviewSource: "",
@@ -55,7 +55,7 @@ export const state = reactive({
     loginType: "",
     username: "",
     quickDownloadEnabled: false,
-    gallarySize: 0,
+    gallerySize: 0,
     singleClick: false,
     stickySidebar: stickyStartup(),
     locale: detectLocale(), // Default to the locale from moment
@@ -98,7 +98,6 @@ export const state = reactive({
     key: "",
     items: [],
   },
-  jwt: "",
   sharePassword: "",
   loading: [],
   reload: false,
@@ -110,6 +109,7 @@ export const state = reactive({
     queue: [],
     progress: [],
     sizes: [],
+    isUploading: false,
   },
   prompts: [],
   show: null,
@@ -148,9 +148,40 @@ export const state = reactive({
     mode: 'single', // 'single', 'sequential', 'shuffle', 'loop-single', 'loop-all'
     isPlaying: false
   },
+  shareInfo: {
+    isShare: false,
+    disableThumbnails: false,
+    hash: "",
+    enforceDarkLightMode: "",
+    disableSidebar: false,
+    isValid: true,
+    shareType: "",
+    title: "",
+    description: "",
+  },
+  notificationHistory: loadNotificationHistory(), // Session-based notification history (persists across refreshes)
 });
+
+/**
+ * Load notification history from sessionStorage
+ * @returns {Array}
+ */
+function loadNotificationHistory() {
+  try {
+    const stored = sessionStorage.getItem('notificationHistory');
+    return stored ? JSON.parse(stored) : [];
+  } catch (error) {
+    console.error('Failed to load notification history:', error);
+    return [];
+  }
+}
 
 function stickyStartup() {
   const stickyStatus = localStorage.getItem("stickySidebar");
   return stickyStatus == "true"
+}
+
+function eventTheme() {
+  const disableEventThemes = localStorage.getItem("disableEventThemes");
+  return disableEventThemes == "true"
 }

@@ -1,17 +1,18 @@
 package files
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"io"
-	"unicode"
-	"unicode/utf8"
-
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/dhowden/tag"
 	"github.com/gtsteffaniak/filebrowser/backend/adapters/fs/fileutils"
@@ -19,6 +20,7 @@ import (
 	"github.com/gtsteffaniak/filebrowser/backend/common/utils"
 	"github.com/gtsteffaniak/filebrowser/backend/database/access"
 	"github.com/gtsteffaniak/filebrowser/backend/database/share"
+	"github.com/gtsteffaniak/filebrowser/backend/ffmpeg"
 	"github.com/gtsteffaniak/filebrowser/backend/indexing"
 	"github.com/gtsteffaniak/filebrowser/backend/indexing/iteminfo"
 	"github.com/gtsteffaniak/go-logger/logger"
@@ -72,17 +74,83 @@ func FileInfoFaster(opts utils.FileOptions, access *access.Storage) (*iteminfo.E
 	response.RealPath = realPath
 	response.Source = opts.Source
 
-	if access != nil && !access.Permitted(index.Path, opts.Path, opts.Username) {
-		// User doesn't have access to the current folder, but check if they have access to any subitems
-		// This allows specific allow rules on subfolders/files to work even when parent is denied
+	if access != nil {
 		err := access.CheckChildItemAccess(response, index, opts.Username)
 		if err != nil {
 			return response, err
 		}
 	}
-	if opts.Content || opts.Metadata {
+
+	// For directories, populate metadata for audio/video files ONLY if explicitly requested
+	// This avoids expensive ffprobe calls on every directory listing
+	if isDir && opts.Metadata {
+		startTime := time.Now()
+		metadataCount := 0
+
+		// Create a single shared FFmpegService instance for all files to coordinate concurrency
+		sharedFFmpegService := ffmpeg.NewFFmpegService(10, false, "")
+		if sharedFFmpegService != nil {
+			// Process files concurrently using goroutines
+			var wg sync.WaitGroup
+			var mu sync.Mutex // Protects metadataCount
+
+			for i := range response.Files {
+				fileItem := &response.Files[i]
+				isItemAudio := strings.HasPrefix(fileItem.Type, "audio")
+				isItemVideo := strings.HasPrefix(fileItem.Type, "video")
+
+				if isItemAudio || isItemVideo {
+					// Get the real path for this file
+					itemRealPath, _, _ := index.GetRealPath(opts.Path, fileItem.Name)
+
+					// Capture loop variables in local copies to avoid closure issues
+					item := fileItem
+					itemPath := itemRealPath
+					isAudio := isItemAudio
+
+					wg.Go(func() {
+						// Extract metadata for audio files (without album art for performance)
+						if isAudio {
+							err := extractAudioMetadata(context.Background(), item, itemPath, opts.AlbumArt || opts.Content, opts.Metadata, sharedFFmpegService)
+							if err != nil {
+								logger.Debugf("failed to extract metadata for file: "+item.Name, err)
+							} else {
+								mu.Lock()
+								metadataCount++
+								mu.Unlock()
+							}
+						} else {
+							// Extract duration for video files
+							err := extractVideoMetadata(context.Background(), item, itemPath, sharedFFmpegService)
+							if err != nil {
+								logger.Debugf("failed to extract video metadata for file: "+item.Name, err)
+							} else {
+								mu.Lock()
+								metadataCount++
+								mu.Unlock()
+							}
+						}
+					})
+				}
+			}
+
+			// Wait for all goroutines to complete
+			wg.Wait()
+		}
+
+		if metadataCount > 0 {
+			elapsed := time.Since(startTime)
+			logger.Debugf("Extracted metadata for %d audio/video files concurrently in %v (avg: %v per file)",
+				metadataCount, elapsed, elapsed/time.Duration(metadataCount))
+		}
+	}
+
+	// Extract content/metadata when explicitly requested OR for single file audio/video requests
+	isAudioVideo := strings.HasPrefix(info.Type, "audio") || strings.HasPrefix(info.Type, "video")
+	if opts.Content || opts.Metadata || (!isDir && isAudioVideo) {
 		processContent(response, index, opts)
 	}
+
 	if settings.Config.Integrations.OnlyOffice.Secret != "" && info.Type != "directory" && iteminfo.IsOnlyOffice(info.Name) {
 		response.OnlyOfficeId = generateOfficeId(realPath)
 	}
@@ -99,6 +167,18 @@ func processContent(info *iteminfo.ExtendedFileInfo, idx *indexing.Index, opts u
 	}
 
 	if isVideo {
+		// Extract duration for video
+		extItem := &iteminfo.ExtendedItemInfo{
+			ItemInfo: info.ItemInfo,
+		}
+		err := extractVideoMetadata(context.Background(), extItem, info.RealPath, nil)
+		if err != nil {
+			logger.Debugf("failed to extract video metadata for file: "+info.RealPath, info.Name, err)
+		} else {
+			info.Metadata = extItem.Metadata
+		}
+
+		// Handle subtitles if requested
 		if opts.ExtractEmbeddedSubtitles {
 			parentPath := filepath.Dir(info.Path)
 			parentInfo, exists := idx.GetReducedMetadata(parentPath, true)
@@ -114,11 +194,17 @@ func processContent(info *iteminfo.ExtendedFileInfo, idx *indexing.Index, opts u
 	}
 
 	if isAudio {
-		err := extractAudioMetadata(info)
+		// Create an ExtendedItemInfo to hold the metadata
+		extItem := &iteminfo.ExtendedItemInfo{
+			ItemInfo: info.ItemInfo,
+		}
+		err := extractAudioMetadata(context.Background(), extItem, info.RealPath, opts.AlbumArt || opts.Content, opts.Metadata || opts.Content, nil)
 		if err != nil {
 			logger.Debugf("failed to extract audio metadata for file: "+info.RealPath, info.Name, err)
 		} else {
-			info.HasPreview = info.AudioMeta.AlbumArt != ""
+			// Copy metadata to ExtendedFileInfo
+			info.Metadata = extItem.Metadata
+			info.HasPreview = extItem.Metadata != nil && extItem.Metadata.AlbumArt != ""
 		}
 		return
 	}
@@ -148,8 +234,10 @@ func generateOfficeId(realPath string) string {
 }
 
 // extractAudioMetadata extracts metadata from an audio file using dhowden/tag
-func extractAudioMetadata(item *iteminfo.ExtendedFileInfo) error {
-	file, err := os.Open(item.RealPath)
+// and optionally extracts duration using the ffmpeg service with concurrency control
+// If ffmpegService is nil, a new service will be created (for backward compatibility)
+func extractAudioMetadata(ctx context.Context, item *iteminfo.ExtendedItemInfo, realPath string, getArt bool, getDuration bool, ffmpegService *ffmpeg.FFmpegService) error {
+	file, err := os.Open(realPath)
 	if err != nil {
 		return err
 	}
@@ -172,7 +260,7 @@ func extractAudioMetadata(item *iteminfo.ExtendedFileInfo) error {
 		return err
 	}
 
-	item.AudioMeta = &iteminfo.AudioMetadata{
+	item.Metadata = &iteminfo.MediaMetadata{
 		Title:  m.Title(),
 		Artist: m.Artist(),
 		Album:  m.Album(),
@@ -182,50 +270,108 @@ func extractAudioMetadata(item *iteminfo.ExtendedFileInfo) error {
 
 	// Extract track number
 	track, _ := m.Track()
-	item.AudioMeta.Track = track
+	item.Metadata.Track = track
+
+	// Extract duration ONLY if explicitly requested using the ffmpeg VideoService
+	// This respects concurrency limits and gracefully handles missing ffmpeg
+	if getDuration {
+		// Use provided service or create a new one for backward compatibility
+		service := ffmpegService
+		if service == nil {
+			service = ffmpeg.NewFFmpegService(5, false, "")
+		}
+		if service != nil {
+			startTime := time.Now()
+			if duration, err := service.GetMediaDuration(ctx, realPath); err == nil {
+				item.Metadata.Duration = int(duration)
+				elapsed := time.Since(startTime)
+				if elapsed > 100*time.Millisecond {
+					logger.Debugf("Duration extraction took %v for file: %s", elapsed, item.Name)
+				}
+			}
+		}
+	}
+
+	if !getArt {
+		return nil
+	}
 
 	// Extract album art and encode as base64 with strict size limits
 	if picture := m.Picture(); picture != nil && picture.Data != nil {
 		// More aggressive size limit to prevent memory issues (max 5MB)
 		if len(picture.Data) <= 5*1024*1024 {
-			item.AudioMeta.AlbumArt = base64.StdEncoding.EncodeToString(picture.Data)
+			item.Metadata.AlbumArt = base64.StdEncoding.EncodeToString(picture.Data)
 		} else {
-			logger.Debugf("Skipping album art for %s: too large (%d bytes)", item.RealPath, len(picture.Data))
+			logger.Debugf("Skipping album art for %s: too large (%d bytes)", realPath, len(picture.Data))
 		}
 	}
 
 	return nil
 }
 
-func DeleteFiles(source, absPath string, absDirPath string) error {
-	err := os.RemoveAll(absPath)
-	if err != nil {
-		return err
+// extractVideoMetadata extracts duration from video files using ffprobe
+// If ffmpegService is nil, a new service will be created (for backward compatibility)
+func extractVideoMetadata(ctx context.Context, item *iteminfo.ExtendedItemInfo, realPath string, ffmpegService *ffmpeg.FFmpegService) error {
+	// Use provided service or create a new one for backward compatibility
+	service := ffmpegService
+	if service == nil {
+		service = ffmpeg.NewFFmpegService(10, false, "")
 	}
+	if service != nil {
+		duration, err := service.GetMediaDuration(ctx, realPath)
+		if err != nil {
+			return err
+		}
+		if duration > 0 {
+			item.Metadata = &iteminfo.MediaMetadata{
+				Duration: int(duration),
+			}
+		}
+		return nil
+	}
+	return nil
+}
+
+func DeleteFiles(source, absPath string, absDirPath string, isDir bool) error {
 	index := indexing.GetIndex(source)
 	if index == nil {
 		return fmt.Errorf("could not get index: %v ", source)
 	}
-	if index.Config.DisableIndexing {
-		return nil
-	}
 
-	// Clear RealPathCache entries for the deleted path to prevent cache issues
-	// when a folder with the same name is created later
-	indexPath := index.MakeIndexPath(absPath)
-	realPath, _, err := index.GetRealPath(indexPath)
-	if err == nil {
-		// Clear both the path and the isdir cache entries
-		indexing.RealPathCache.Delete(realPath)
-		indexing.RealPathCache.Delete(realPath + ":isdir")
-	}
+	if !index.Config.DisableIndexing {
+		indexPath := index.MakeIndexPath(absPath)
 
-	refreshConfig := utils.FileOptions{Path: index.MakeIndexPath(absDirPath), IsDir: true}
-	err = index.RefreshFileInfo(refreshConfig)
-	if err != nil {
+		// Perform the physical deletion
+		err := os.RemoveAll(absPath)
+		if err != nil {
+			return err
+		}
+
+		// Clear cache entries
+		indexing.RealPathCache.Delete(absPath)
+		indexing.IsDirCache.Delete(absPath + ":isdir")
+
+		// Remove metadata from index
+		if isDir {
+			// Recursively remove directory and all subdirectories from index
+			index.DeleteMetadata(indexPath, true, true)
+		} else {
+			// Remove file from parent's file list
+			index.DeleteMetadata(indexPath, false, false)
+		}
+
+		// Refresh the parent directory to recalculate sizes and update counts
+		// This will traverse up the tree and update all parent sizes correctly
+		refreshConfig := utils.FileOptions{
+			Path:  index.MakeIndexPath(absDirPath),
+			IsDir: true,
+		}
+		err = index.RefreshFileInfo(refreshConfig)
 		return err
 	}
-	return nil
+
+	// Indexing disabled, just delete the file
+	return os.RemoveAll(absPath)
 }
 
 func RefreshIndex(source string, path string, isDir bool, recursive bool) error {
@@ -247,6 +393,23 @@ func RefreshIndex(source string, path string, isDir bool, recursive bool) error 
 	// Skip indexing for viewable paths (viewable: true means don't index, just allow FS access)
 	if idx.IsViewable(isDir, path) {
 		return nil
+	}
+
+	// For directories, check if the path exists on disk
+	// If it doesn't exist, remove it from the index
+	if isDir {
+		realPath, _, err := idx.GetRealPath(path)
+		if err == nil {
+			// Check if the directory exists on disk
+			if !Exists(realPath) {
+				// Directory no longer exists, remove it from the index
+				// This clears both Directories and DirectoriesLedger maps
+				indexing.RealPathCache.Delete(realPath)
+				indexing.IsDirCache.Delete(realPath + ":isdir")
+				idx.DeleteMetadata(path, true, false)
+				return nil
+			}
+		}
 	}
 
 	err := idx.RefreshFileInfo(utils.FileOptions{Path: path, IsDir: isDir, Recursive: recursive})
@@ -282,20 +445,16 @@ func validateMoveDestination(src, dst string, isSrcDir bool) error {
 	return nil
 }
 
-func MoveResource(isSrcDir bool, sourceIndex, destIndex, realsrc, realdst string, s *share.Storage) error {
+func MoveResource(isSrcDir bool, sourceIndex, destIndex, realsrc, realdst string, s *share.Storage, a *access.Storage) error {
+	// Check if source and destination are the same file
+	if realsrc == realdst {
+		return fmt.Errorf("cannot move a file to itself: %s", realsrc)
+	}
+
 	// Validate the move operation before executing
 	if err := validateMoveDestination(realsrc, realdst, isSrcDir); err != nil {
 		return err
 	}
-
-	err := fileutils.MoveFile(realsrc, realdst)
-	if err != nil {
-		return err
-	}
-
-	// For move operations:
-	// 1. Delete the source from the index (recursively if it's a directory)
-	// 2. Recursively index the destination to capture the entire moved tree
 
 	// Get indexes for deletion and refresh operations
 	srcIdx := indexing.GetIndex(sourceIndex)
@@ -307,44 +466,61 @@ func MoveResource(isSrcDir bool, sourceIndex, destIndex, realsrc, realdst string
 		return fmt.Errorf("could not get destination index: %v", destIndex)
 	}
 
-	// Delete from source index (recursively for directories)
-	go srcIdx.DeleteMetadata(realsrc, isSrcDir, isSrcDir) //nolint:errcheck
-
-	// Clear RealPathCache entries for the moved path to prevent cache issues
-	// when a file/folder with the same name is created later
+	// Prepare paths for index operations
 	srcIndexPath := srcIdx.MakeIndexPath(realsrc)
-	srcRealPath, _, err := srcIdx.GetRealPath(srcIndexPath)
-	if err == nil {
-		// Clear both the path and the isdir cache entries
-		indexing.RealPathCache.Delete(srcRealPath)
-		indexing.RealPathCache.Delete(srcRealPath + ":isdir")
+	srcParentPath := filepath.Dir(realsrc)
+
+	// Perform the physical move
+	err := fileutils.MoveFile(realsrc, realdst)
+	if err != nil {
+		return err
 	}
 
-	// For move operations, refresh the moved item and its new parent directory
-	// Run all refresh operations in a goroutine to avoid blocking the API
-	if isSrcDir {
-		go func() {
-			// When moving a folder, refresh the folder itself recursively FIRST
-			// Must complete before parent refresh to avoid race condition
-			RefreshIndex(destIndex, realdst, true, true) //nolint:errcheck
+	// Handle SOURCE cleanup (treat as deletion)
+	if !srcIdx.Config.DisableIndexing {
+		if isSrcDir {
+			srcIdx.DeleteMetadata(srcIndexPath, true, true)
+		} else {
+			srcIdx.DeleteMetadata(srcIndexPath, false, false)
+		}
+		go RefreshIndex(sourceIndex, srcParentPath, true, false) //nolint:errcheck
+	}
 
-			// THEN refresh the parent directory so it sees the newly indexed child
+	// Handle DESTINATION indexing
+	if !dstIdx.Config.DisableIndexing {
+		if isSrcDir {
+			go func() {
+				RefreshIndex(destIndex, realdst, true, true) //nolint:errcheck
+				parentDir := filepath.Dir(realdst)
+				RefreshIndex(destIndex, parentDir, true, false) //nolint:errcheck
+			}()
+		} else {
 			parentDir := filepath.Dir(realdst)
-			RefreshIndex(destIndex, parentDir, true, false) //nolint:errcheck
-		}()
-	} else {
-		// If moving a file, just refresh the parent directory
-		parentDir := filepath.Dir(realdst)
-		go RefreshIndex(destIndex, parentDir, true, false) //nolint:errcheck
+			go RefreshIndex(destIndex, parentDir, true, false) //nolint:errcheck
+		}
 	}
 
 	// Use backend source paths to match how shares are stored
 	go s.UpdateShares(srcIdx.Path, srcIdx.MakeIndexPath(realsrc), dstIdx.Path, dstIdx.MakeIndexPath(realdst)) //nolint:errcheck
 
+	// Update access rules for the moved path
+	if a != nil {
+		// If moving within the same source, update the rules
+		if srcIdx.Path == dstIdx.Path {
+			go a.UpdateRules(srcIdx.Path, srcIdx.MakeIndexPath(realsrc), dstIdx.MakeIndexPath(realdst)) //nolint:errcheck
+		}
+		// Cross-source moves don't preserve access rules (they're source-specific)
+	}
+
 	return nil
 }
 
 func CopyResource(isSrcDir bool, sourceIndex, destIndex, realsrc, realdst string) error {
+	// Check if source and destination are the same file
+	if realsrc == realdst {
+		return fmt.Errorf("cannot copy a file to itself: %s", realsrc)
+	}
+
 	// Validate the copy operation before executing
 	if err := validateMoveDestination(realsrc, realdst, isSrcDir); err != nil {
 		return err
@@ -397,15 +573,10 @@ func WriteDirectory(opts utils.FileOptions) error {
 		if err != nil {
 			return fmt.Errorf("could not remove existing file to create directory: %v", err)
 		}
-		// Clear the cache for the removed file
-		realPath, _, err = idx.GetRealPath(opts.Path)
-		if err == nil {
-			indexing.RealPathCache.Delete(realPath)
-			indexing.RealPathCache.Delete(realPath + ":isdir")
-		}
 	}
 
 	// Ensure the parent directories exist
+	// Permissions are set by MkdirAll (subject to umask, which is usually acceptable)
 	err = os.MkdirAll(realPath, fileutils.PermDir)
 	if err != nil {
 		return err
@@ -414,18 +585,19 @@ func WriteDirectory(opts utils.FileOptions) error {
 	// Explicitly set directory permissions to bypass umask
 	err = os.Chmod(realPath, fileutils.PermDir)
 	if err != nil {
-		return err
+		// Handle chmod error gracefully
+		logger.Debugf("Could not set file permissions for %s (this may be expected in restricted environments): %v", realPath, err)
 	}
 
 	return RefreshIndex(idx.Name, opts.Path, true, true)
 }
 
-func WriteFile(opts utils.FileOptions, in io.Reader) error {
-	idx := indexing.GetIndex(opts.Source)
+func WriteFile(source, path string, in io.Reader) error {
+	idx := indexing.GetIndex(source)
 	if idx == nil {
-		return fmt.Errorf("could not get index: %v ", opts.Source)
+		return fmt.Errorf("could not get index: %v ", source)
 	}
-	realPath, _, _ := idx.GetRealPath(opts.Path)
+	realPath, _, _ := idx.GetRealPath(path)
 	// Strip trailing slash from realPath if it's meant to be a file
 	realPath = strings.TrimRight(realPath, "/")
 	// Ensure the parent directories exist
@@ -436,18 +608,20 @@ func WriteFile(opts utils.FileOptions, in io.Reader) error {
 	}
 	var stat os.FileInfo
 	// Check if the destination exists and is a directory
-	if stat, err = os.Stat(realPath); err == nil && stat.IsDir() {
-		// If it's a directory and we're trying to create a file, remove the directory first
-		err = os.RemoveAll(realPath)
-		if err != nil {
-			return fmt.Errorf("could not remove existing directory to create file: %v", err)
+	if stat, err = os.Stat(realPath); err == nil {
+		if stat.IsDir() {
+			// If it's a directory and we're trying to create a file, remove the directory first
+			err = os.RemoveAll(realPath)
+			if err != nil {
+				return fmt.Errorf("could not remove existing directory to create file: %v", err)
+			}
 		}
-		// Clear the cache for the removed directory (use realPath without re-fetching)
-		indexing.RealPathCache.Delete(realPath)
-		indexing.RealPathCache.Delete(realPath + ":isdir")
+		// If file exists, its permissions will be preserved (O_TRUNC doesn't change permissions)
 	}
 
 	// Open the file for writing (create if it doesn't exist, truncate if it does)
+	// For new files: permissions are set to fileutils.PermFile (subject to umask, which is usually acceptable)
+	// For existing files: permissions are preserved automatically (O_TRUNC doesn't change them)
 	file, err := os.OpenFile(realPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, fileutils.PermFile)
 	if err != nil {
 		return err
@@ -460,13 +634,14 @@ func WriteFile(opts utils.FileOptions, in io.Reader) error {
 		return err
 	}
 
-	// Explicitly set file permissions to bypass umask
-	err = os.Chmod(realPath, fileutils.PermFile)
+	// Explicitly set directory permissions to bypass umask
+	err = os.Chmod(realPath, fileutils.PermDir)
 	if err != nil {
-		return err
+		// Handle chmod error gracefully
+		logger.Debugf("Could not set file permissions for %s (this may be expected in restricted environments): %v", realPath, err)
 	}
 
-	return RefreshIndex(opts.Source, opts.Path, false, false)
+	return RefreshIndex(source, path, false, false)
 }
 
 // getContent reads and returns the file content if it's considered an editable text file.
@@ -496,9 +671,31 @@ func getContent(realPath string) (string, error) {
 	// --- Start of new heuristic checks ---
 
 	if n > 0 {
+		// Trim header to last complete UTF-8 rune to avoid false negatives
+		// when the header read cuts off in the middle of a multi-byte sequence.
+		// We decode runes from the end until we find a valid one, trimming
+		// any incomplete sequences at the end.
+		trimmedHeader := actualHeader
+		for len(trimmedHeader) > 0 {
+			lastRune, size := utf8.DecodeLastRune(trimmedHeader)
+			if lastRune != utf8.RuneError {
+				// Found a valid complete rune
+				break
+			}
+			// RuneError occurred - this could be an incomplete sequence or invalid byte
+			// Trim the last byte and try again
+			if size == 1 && len(trimmedHeader) > 0 {
+				trimmedHeader = trimmedHeader[:len(trimmedHeader)-1]
+			} else {
+				// Shouldn't happen, but break to avoid infinite loop
+				break
+			}
+		}
+
 		// 1. Basic Check: Is the header valid UTF-8?
 		// If not, it's unlikely an editable UTF-8 text file.
-		if !utf8.Valid(actualHeader) {
+		// Use trimmed header to avoid false negatives from truncated sequences
+		if len(trimmedHeader) > 0 && !utf8.Valid(trimmedHeader) {
 			return "", nil // Not an error, just not the text file we want
 		}
 

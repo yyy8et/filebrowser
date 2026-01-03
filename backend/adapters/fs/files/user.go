@@ -6,7 +6,9 @@ import (
 	"path/filepath"
 
 	"github.com/gtsteffaniak/filebrowser/backend/common/settings"
+	"github.com/gtsteffaniak/filebrowser/backend/common/utils"
 	"github.com/gtsteffaniak/filebrowser/backend/database/users"
+	"github.com/gtsteffaniak/go-logger/logger"
 )
 
 // MakeUserDir makes the user directory according to settings.
@@ -25,37 +27,46 @@ func MakeUserDirs(u *users.User, disableScopeChange bool) error {
 	for i, scope := range u.Scopes {
 		source, ok := settings.Config.Server.SourceMap[scope.Name]
 		if !ok {
-			return fmt.Errorf("MakeUserDirs: source not found: %s", scope.Name)
+			logger.Errorf("MakeUserDirs: source not found: %s", scope.Name)
+			continue
 		}
 		// create directory and append user name
 		if filepath.Base(scope.Scope) != cleanedUserName && source.Config.CreateUserDir && !disableScopeChange {
 			fullPath := filepath.Join(source.Path, scope.Scope, cleanedUserName)
 			parentDir := filepath.Join(source.Path, scope.Scope)
-			// validate that scope path exists
+			// If parent directory doesn't exist and createUserDir is enabled, create it
 			if !Exists(parentDir) {
-				return fmt.Errorf("MakeUserDirs: scope path does not exist: %s", scope.Scope)
+				if err := MakeUserDir(parentDir); err != nil {
+					logger.Errorf("MakeUserDirs: failed to create parent scope directory: %s - %v", scope.Scope, err)
+					continue
+				}
 			}
-			scope.Scope = filepath.Join(scope.Scope, cleanedUserName)
+			// Use JoinPathAsUnix to ensure scope remains in Unix format (forward slashes)
+			scope.Scope = utils.JoinPathAsUnix(scope.Scope, cleanedUserName)
 			err := MakeUserDir(fullPath)
 			if err != nil {
-				return fmt.Errorf("MakeUserDirs: failed to create user home dir: %s", err)
+				logger.Errorf("MakeUserDirs: failed to create user home dir: %s", err)
+				// Continue to next scope even if this one failed
 			}
 		} else if filepath.Base(scope.Scope) == cleanedUserName && source.Config.CreateUserDir {
 			// create directory exactly as specified
 			fullPath := filepath.Join(source.Path, scope.Scope)
 			parentDir := filepath.Dir(fullPath)
 			if !Exists(parentDir) {
-				return fmt.Errorf("MakeUserDirs: scope folder does not exist: %s", parentDir)
+				logger.Errorf("MakeUserDirs: scope folder does not exist: %s", parentDir)
+				continue
 			}
 			err := MakeUserDir(fullPath)
 			if err != nil {
-				return fmt.Errorf("create user: failed to create user home dir: %s", err)
+				logger.Errorf("create user: failed to create user home dir: %s", err)
+				// Continue to next scope even if this one failed
 			}
 		} else {
 			// just assigning scope to path provided, so just check that it exists
 			path := filepath.Join(source.Path, scope.Scope)
 			if !Exists(path) {
-				return fmt.Errorf("MakeUserDirs: scope folder does not exist: %s", path)
+				logger.Errorf("MakeUserDirs: scope folder does not exist: %s", path)
+				continue
 			}
 		}
 		u.Scopes[i] = scope

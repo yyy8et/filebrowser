@@ -8,8 +8,18 @@ import (
 	"strings"
 
 	"github.com/gtsteffaniak/filebrowser/backend/common/settings"
+	"github.com/gtsteffaniak/filebrowser/backend/common/utils"
 	"github.com/gtsteffaniak/filebrowser/backend/indexing"
 )
+
+type searchOptions struct {
+	query        string
+	source       string
+	searchScope  string
+	combinedPath string
+	sessionId    string
+	largest      bool
+}
 
 // searchHandler handles search requests for files based on the provided query.
 //
@@ -57,39 +67,65 @@ import (
 // @Failure 400 {object} map[string]string "Bad Request"
 // @Router /api/search [get]
 func searchHandler(w http.ResponseWriter, r *http.Request, d *requestContext) (int, error) {
+	searchOptions, err := prepSearchOptions(r, d)
+	if err != nil {
+		return http.StatusBadRequest, err
+	}
+	index := indexing.GetIndex(searchOptions.source)
+	if index == nil {
+		return http.StatusBadRequest, fmt.Errorf("index not found for source %s", searchOptions.source)
+	}
+
+	// Perform the search using the provided query and user scope
+	response := index.Search(searchOptions.query, searchOptions.combinedPath, searchOptions.sessionId, searchOptions.largest, indexing.DefaultSearchResults)
+
+	// Filter out items that are not permitted according to access rules
+	filteredResponse := make([]*indexing.SearchResult, 0, len(response))
+	for _, result := range response {
+		indexPath := utils.JoinPathAsUnix(searchOptions.combinedPath, result.Path)
+		if store.Access != nil && !store.Access.Permitted(index.Path, indexPath, d.user.Username) {
+			continue // Silently skip this file/folder
+		}
+		// Remove the user scope from the path (modifying in place is safe - these are fresh allocations)
+		result.Path = strings.TrimPrefix(result.Path, searchOptions.combinedPath)
+		if result.Path == "" {
+			result.Path = "/"
+		}
+		filteredResponse = append(filteredResponse, result)
+	}
+	return renderJSON(w, r, filteredResponse)
+}
+
+func prepSearchOptions(r *http.Request, d *requestContext) (*searchOptions, error) {
 	query := r.URL.Query().Get("query")
 	source := r.URL.Query().Get("source")
 	scope := r.URL.Query().Get("scope")
+	largest := r.URL.Query().Get("largest") == "true"
 	unencodedScope, err := url.PathUnescape(scope)
 	if err != nil {
-		return http.StatusBadRequest, fmt.Errorf("invalid path encoding: %v", err)
+		return nil, fmt.Errorf("invalid path encoding: %v", err)
 	}
-	if len(query) < settings.Config.Server.MinSearchLength {
-		return http.StatusBadRequest, fmt.Errorf("query is too short, minimum length is %d", settings.Config.Server.MinSearchLength)
+	if len(query) < settings.Config.Server.MinSearchLength && !largest {
+		return nil, fmt.Errorf("query is too short, minimum length is %d", settings.Config.Server.MinSearchLength)
 	}
 	searchScope := strings.TrimPrefix(unencodedScope, ".")
 	// Retrieve the User-Agent and X-Auth headers from the request
 	sessionId := r.Header.Get("SessionId")
 	index := indexing.GetIndex(source)
 	if index == nil {
-		return http.StatusBadRequest, fmt.Errorf("index not found for source %s", source)
+		return nil, fmt.Errorf("index not found for source %s", source)
 	}
 	userscope, err := settings.GetScopeFromSourceName(d.user.Scopes, source)
 	if err != nil {
-		return http.StatusForbidden, err
+		return nil, err
 	}
 	combinedPath := index.MakeIndexPath(filepath.Join(userscope, searchScope))
-	// Perform the search using the provided query and user scope
-	response := index.Search(query, combinedPath, sessionId)
-	for i := range response {
-		// Remove the user scope from the path
-		response[i].Path = strings.TrimPrefix(response[i].Path, combinedPath)
-		if response[i].Path == "" {
-			response[i].Path = "/"
-		}
-	}
-	// trim user scope from each result path
-	// Set the Content-Type header to application/json
-	w.Header().Set("Content-Type", "application/json")
-	return renderJSON(w, r, response)
+	return &searchOptions{
+		query:        query,
+		source:       source,
+		searchScope:  searchScope,
+		combinedPath: combinedPath,
+		sessionId:    sessionId,
+		largest:      largest,
+	}, nil
 }

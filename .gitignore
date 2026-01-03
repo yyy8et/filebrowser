@@ -10,21 +10,23 @@ rice-box.go
 /backend/filebrowser.exe
 frontend/tsconfig.tsbuildinfo
 /backend/backend.exe
+/backend/playwright-files.db
 /backend/tmp
 /backend/dist
 /frontend/dist
 /frontend/pkg
 /frontend/test-results
+/frontend/playwright-files
+/frontend/screenshots
 /frontend/tests/playwright-files/demo*
 /frontend/loginAuth.json
-/frontend/package-lock.json
 /backend/vendor
 /backend/*.cov
 /backend/*test_config.yaml
 /backend/generated.yaml
 /backend/srv
 /backend/http/dist
-/backend/http/embed/*
+/backend/http/embed
 
 .DS_Store
 node_modules
@@ -50,3 +52,7 @@ bin/
 build/
 *__debug*
 backend/custom.css
+
+# Runtime cache directories created by tests/application
+backend/preview/heic/
+backend/preview/thumbnails/

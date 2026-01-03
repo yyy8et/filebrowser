@@ -5,7 +5,7 @@
 
   <div class="card-content">
     <!-- API Key Name Input -->
-    <p>{{ $t('api.keyName') }}</p>
+    <p>{{ $t('general.name') }}</p>
     <input v-focus class="input" type="text" v-model.trim="apiName"
       :placeholder="$t('api.keyNamePlaceholder')" />
 
@@ -20,21 +20,34 @@
       </select>
     </div>
 
-    <!-- Permissions Input -->
-    <p>{{ $t('api.permissionNote') }}</p>
+    <!-- Minimal Token Option -->
     <div class="settings-items">
-      <ToggleSwitch v-for="(isEnabled, permission) in permissions" :key="permission" class="item"
-        v-model="permissions[permission]" :name="permission" />
+      <ToggleSwitch
+        v-model="minimal"
+        name="minimal"
+        class="item"
+        :title="$t('api.minimalDescription')"
+        :description="$t('api.minimalInfo')"
+      />
+    </div>
+
+    <!-- Permissions Input (only shown for full tokens) -->
+    <div v-if="!minimal">
+      <p>{{ $t('api.permissionNote') }}</p>
+      <div class="settings-items">
+        <ToggleSwitch v-for="(isEnabled, permission) in permissions" :key="permission" class="item"
+          v-model="permissions[permission]" :name="permission" />
+      </div>
     </div>
   </div>
 
   <div class="card-action">
-    <button @click="closeHovers" class="button button--flat button--grey" :aria-label="$t('buttons.cancel')"
-      :title="$t('buttons.cancel')">
-      {{ $t("buttons.cancel") }}
+    <button @click="closeHovers" class="button button--flat button--grey" :aria-label="$t('general.cancel')"
+      :title="$t('general.cancel')">
+      {{ $t("general.cancel") }}
     </button>
-    <button class="button button--flat button--blue" @click="createAPIKey" :title="$t('buttons.create')">
-      {{ $t("buttons.create") }}
+    <button class="button button--flat button--blue" @click="createAPIKey" :title="$t('general.create')">
+      {{ $t("general.create") }}
     </button>
   </div>
 </template>
@@ -53,6 +66,7 @@ export default {
       apiName: "",
       duration: 1,
       unit: "days",
+      minimal: false, // false = full token (default), true = minimal token
     };
   },
   components: {
@@ -76,21 +90,25 @@ export default {
     },
     async createAPIKey() {
       try {
-        // Filter to get keys of permissions set to true and join them as a comma-separated string
-        const permissionsString = Object.keys(this.permissions)
-          .filter((key) => this.permissions[key])
-          .join(",");
-
         const params = {
           name: this.apiName,
           days: this.durationInDays,
-          permissions: permissionsString,
+          minimal: this.minimal,
         };
+
+        // Only include permissions for full tokens (not minimal tokens)
+        if (!this.minimal) {
+          // Filter to get keys of permissions set to true and join them as a comma-separated string
+          const permissionsString = Object.keys(this.permissions)
+            .filter((key) => this.permissions[key])
+            .join(",");
+          params.permissions = permissionsString;
+        }
 
         await usersApi.createApiKey(params);
         // Emit event to refresh API keys list
         eventBus.emit('apiKeysChanged');
-        notify.showSuccess($t("api.createKeySuccess"));
+        notify.showSuccessToast(this.$t("api.createKeySuccess"));
         mutations.closeHovers();
       } catch (error) {
         notify.showError($t("api.createKeyFailed"));
@@ -102,5 +120,15 @@ export default {
 <style scoped>
 .sizeInputWrapper {
   display: flex !important;
+}
+.description {
+  font-size: 0.9em;
+  color: #666;
+  margin-top: 0.5em;
+}
+.info-text {
+  font-style: italic;
+  color: #666;
+  margin-top: 0.5em;
 }
 </style>

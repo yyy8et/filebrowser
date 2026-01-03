@@ -71,7 +71,7 @@ export default {
     },
     "bar-border-radius": {
       type: Number,
-      default: 4,
+      default: 8, // ~0.5em at default font size
     },
     spacing: {
       type: Number,
@@ -186,6 +186,10 @@ export default {
         position: 'relative'
       };
 
+      if (this.status === 'indexing') {
+        style['background'] = '#fff8d6'; // Muted yellow/amber color
+      }
+
       if (this.textPosition == "middle" || this.textPosition == "inside") {
         style["min-height"] = this.size_px + "px";
       }
@@ -210,6 +214,12 @@ export default {
         background: barColor,
         transition: this.barTransition,
       };
+
+      // Add pulse animation for indexing status
+      if (this.status === 'indexing') {
+        style['animation'] = 'progress-pulse 4s ease-in-out infinite';
+        style['background'] = 'rgb(237 161 41)'; // orange
+      }
 
       if (this.barBorderRadius > 0) {
         style["border-radius"] = this.barBorderRadius + "px";
@@ -294,12 +304,20 @@ export default {
 .tooltip-info-icon {
   font-size: 1rem;
   cursor: pointer;
-  margin-left: 0.3em;
   vertical-align: middle;
   opacity: 0.7;
 }
 
 .tooltip-info-icon:hover {
   opacity: 1;
+}
+
+@keyframes progress-pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.6;
+  }
 }
 </style>

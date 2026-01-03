@@ -13,10 +13,16 @@ server:
       config:
         disableIndexing: true
         defaultEnabled: true
+    - path: "/tests/playwright-files"
+      name: "access"
+      config:
+        defaultEnabled: true
+        denyByDefault: true
 frontend:
   name: "Graham's Filebrowser"
   disableDefaultLinks: true
   styling:
+    disableEventThemes: true
     customThemes:
       no-rounded:
         description: "No rounded corners" # The description of the theme to display in the UI.
@@ -25,3 +31,8 @@ frontend:
     - text: "A playwright test"
       url: "https://playwright.dev/"
       title: "Playwright"
+
+auth:
+  methods:
+    password:
+      signup: true

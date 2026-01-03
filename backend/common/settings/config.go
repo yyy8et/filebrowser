@@ -3,6 +3,7 @@ package settings
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"github.com/go-playground/validator/v10"
 	"github.com/goccy/go-yaml"
 	"github.com/gtsteffaniak/filebrowser/backend/adapters/fs/fileutils"
+	"github.com/gtsteffaniak/filebrowser/backend/common/utils"
 	"github.com/gtsteffaniak/filebrowser/backend/common/version"
 	"github.com/gtsteffaniak/filebrowser/backend/database/users"
 	"github.com/gtsteffaniak/go-logger/logger"
@@ -33,6 +35,9 @@ func Initialize(configFile string) {
 		time.Sleep(5 * time.Second) // allow sleep time before exiting to give docker/kubernetes time before restarting
 		logger.Fatal(err.Error())
 	}
+	setupLogging()
+	// setup logging first to ensure we log any errors
+	setupEnv()
 	err = ValidateConfig(Config)
 	if err != nil {
 		errmsg := "The provided config file failed validation. "
@@ -44,12 +49,29 @@ func Initialize(configFile string) {
 		logger.Fatal(err.Error())
 	}
 	setupFs()
-	setupLogging()
+	setupServer()
 	setupAuth(false)
 	setupSources(false)
 	setupUrls()
 	setupFrontend(false)
-	setupVideoPreview()
+	setupMedia()
+}
+
+func setupServer() {
+	if Config.Server.ListenAddress == "" {
+		Config.Server.ListenAddress = "0.0.0.0"
+	}
+}
+
+func setupEnv() {
+	Env.IsPlaywright = os.Getenv("FILEBROWSER_PLAYWRIGHT_TEST") == "true"
+	if Env.IsPlaywright {
+		logger.Warning("Running in playwright test mode. This is not recommended for production.")
+	}
+	Env.IsDevMode = os.Getenv("FILEBROWSER_DEVMODE") == "true"
+	if Env.IsDevMode {
+		logger.Warning("Running in dev mode. This is not recommended for production.")
+	}
 }
 
 func setupFs() {
@@ -66,20 +88,137 @@ func setupFs() {
 	}
 	fileutils.SetFsPermissions(os.FileMode(filePermOctal), os.FileMode(dirPermOctal))
 
-	// try writing to cache dir
-	absCacheDir, err := filepath.Abs(Config.Server.CacheDir)
-	if err != nil {
-		logger.Errorf("error getting absolute path for 'server.cacheDir: %v': %v", Config.Server.CacheDir, err)
-	}
-	cacheDir := filepath.Join(absCacheDir, "init_test")
-	err = os.MkdirAll(cacheDir, fileutils.PermDir)
-	if err != nil {
-		logger.Errorf("Unable to write to 'server.cacheDir: %v', please ensure the cache directory is writable: %v", absCacheDir, err)
-	}
+	// Perform mandatory cache directory speed test
+	testCacheDirSpeed()
+
+	logger.Infof("cache directory setup successfully: %v", Config.Server.CacheDir)
 
 }
 
+// testCacheDirSpeed performs a mandatory speed test on the cache directory by writing,
+// reading, and deleting a 10MB test file. Reports write and read performance in MB/s.
+func testCacheDirSpeed() {
+	msgPrfx := "cacheDir"
+	failSuffix := "Please review documentation to ensure a valid cache directory is configured https://filebrowserquantum.com/en/docs/configuration/server/#cachedir"
+	const testFileSize = 10 * 1024 * 1024 // 10MB
+
+	// Ensure cache directory exists
+	err := os.MkdirAll(Config.Server.CacheDir, fileutils.PermDir)
+	if err != nil {
+		logger.Fatalf("%s failed to create cache directory: %v\n%s", msgPrfx, err, failSuffix)
+	}
+
+	testFileName := filepath.Join(Config.Server.CacheDir, "speed_test.tmp")
+
+	// Create test data (10MB of zeros)
+	testData := make([]byte, testFileSize)
+
+	// Test write performance
+	writeStart := time.Now()
+	file, err := os.Create(testFileName)
+	if err != nil {
+		logger.Fatalf("%s failed to create test file: %v\n%s", msgPrfx, err, failSuffix)
+	}
+
+	written, err := file.Write(testData)
+	if err != nil {
+		file.Close()
+		os.Remove(testFileName)
+		logger.Fatalf("%s failed to write test file: %v\n%s", msgPrfx, err, failSuffix)
+	}
+
+	err = file.Sync() // Ensure data is written to disk
+	if err != nil {
+		file.Close()
+		os.Remove(testFileName)
+		logger.Fatalf("%s failed to sync test file to disk: %v\n%s", msgPrfx, err, failSuffix)
+	}
+
+	err = file.Close()
+	if err != nil {
+		os.Remove(testFileName)
+		logger.Fatalf("%s failed to close test file: %v\n%s", msgPrfx, err, failSuffix)
+	}
+
+	writeDuration := time.Since(writeStart)
+	writeSpeedMBs := float64(written) / (1024 * 1024) / writeDuration.Seconds()
+
+	// Test read performance
+	readStart := time.Now()
+	file, err = os.Open(testFileName)
+	if err != nil {
+		os.Remove(testFileName)
+		logger.Fatalf("%s failed to open test file for reading: %v\n%s", msgPrfx, err, failSuffix)
+	}
+
+	readData := make([]byte, testFileSize)
+	readBytes, err := io.ReadFull(file, readData)
+	if err != nil {
+		file.Close()
+		os.Remove(testFileName)
+		logger.Fatalf("%s failed to read test file: %v\n%s", msgPrfx, err, failSuffix)
+	}
+
+	err = file.Close()
+	if err != nil {
+		os.Remove(testFileName)
+		logger.Fatalf("%s failed to close test file after reading: %v\n%s", msgPrfx, err, failSuffix)
+	}
+
+	readDuration := time.Since(readStart)
+	readSpeedMBs := float64(readBytes) / (1024 * 1024) / readDuration.Seconds()
+
+	// Verify data integrity
+	if readBytes != written {
+		os.Remove(testFileName)
+		logger.Fatalf("%s data integrity check failed: wrote %d bytes but read %d bytes\n%s", msgPrfx, written, readBytes, failSuffix)
+	}
+
+	// Clean up test file
+	err = os.Remove(testFileName)
+	if err != nil {
+		logger.Fatalf("%s failed to remove test file: %v\n%s", msgPrfx, err, failSuffix)
+	}
+
+	// Log performance results
+	writeDurationMs := writeDuration.Seconds() * 1000
+	readDurationMs := readDuration.Seconds() * 1000
+	const highLatencyThresholdMs = 1000.0 // 1 second for 10MB file indicates high latency
+
+	if writeSpeedMBs < 50 {
+		slowSuffix := " Ensure you configure a faster cache directory via the `server.cacheDir` configuration option."
+		logger.Warningf("%s slow write speed detected: %.2f MB/s (%.2f ms)\n%s\n%s", msgPrfx, writeSpeedMBs, writeDurationMs, failSuffix, slowSuffix)
+	} else if writeDurationMs > highLatencyThresholdMs {
+		slowSuffix := " Ensure you configure a faster cache directory via the `server.cacheDir` configuration option."
+		logger.Warningf("%s high write latency detected: %.2f ms for 10MB file (speed: %.2f MB/s). This may indicate network storage or I/O issues.\n%s\n%s", msgPrfx, writeDurationMs, writeSpeedMBs, failSuffix, slowSuffix)
+	} else {
+		logger.Debugf("%s write speed: %.2f MB/s (%.2f ms)", msgPrfx, writeSpeedMBs, writeDurationMs)
+	}
+	if readSpeedMBs < 50 {
+		slowSuffix := " Ensure you configure a faster cache directory via the `server.cacheDir` configuration option."
+		logger.Warningf("%s slow read speed detected: %.2f MB/s (%.2f ms)\n%s\n%s", msgPrfx, readSpeedMBs, readDurationMs, failSuffix, slowSuffix)
+	} else if readDurationMs > highLatencyThresholdMs {
+		slowSuffix := " Ensure you configure a faster cache directory via the `server.cacheDir` configuration option."
+		logger.Warningf("%s high read latency detected: %.2f ms for 10MB file (speed: %.2f MB/s). This may indicate network storage or I/O issues.\n%s\n%s", msgPrfx, readDurationMs, readSpeedMBs, failSuffix, slowSuffix)
+	} else {
+		logger.Debugf("%s read speed : %.2f MB/s (%.2f ms)", msgPrfx, readSpeedMBs, readDurationMs)
+	}
+	// check cache directory disk free space
+	freeSpace, err := fileutils.GetFreeSpace(Config.Server.CacheDir)
+	if err != nil {
+		logger.Fatalf("%s failed to get free space for cache directory: %v\n%s", msgPrfx, err, failSuffix)
+	}
+	freeSpaceGB := float64(freeSpace) / (1024 * 1024 * 1024)
+	logger.Debugf("%s cache directory has %.2f GB of free space", msgPrfx, freeSpaceGB)
+	const minRecommendedGB = 20.0
+	if freeSpaceGB < minRecommendedGB {
+		logger.Warningf("%s only has %.2f GB of free space, this is less than the %.0f GB minimum recommended free space.\n%s", msgPrfx, freeSpaceGB, minRecommendedGB, failSuffix)
+	}
+}
+
 func setupFrontend(generate bool) {
+	// Load login icon configuration at startup
+	loadLoginIcon()
 	if Config.Server.MinSearchLength == 0 {
 		Config.Server.MinSearchLength = 3
 	}
@@ -99,7 +238,13 @@ func setupFrontend(generate bool) {
 	}
 	Config.Frontend.Styling.LightBackground = FallbackColor(Config.Frontend.Styling.LightBackground, "#f5f5f5")
 	Config.Frontend.Styling.DarkBackground = FallbackColor(Config.Frontend.Styling.DarkBackground, "#141D24")
-	Config.Frontend.Styling.CustomCSSRaw = readCustomCSS(Config.Frontend.Styling.CustomCSS)
+	var err error
+	if Config.Frontend.Styling.CustomCSS != "" {
+		Config.Frontend.Styling.CustomCSSRaw, err = readCustomCSS(Config.Frontend.Styling.CustomCSS)
+		if err != nil {
+			logger.Warning(err.Error())
+		}
+	}
 	Config.Frontend.Styling.CustomThemeOptions = map[string]CustomTheme{}
 	if Config.Frontend.Styling.CustomThemes == nil {
 		Config.Frontend.Styling.CustomThemes = map[string]CustomTheme{}
@@ -125,12 +270,11 @@ func setupFrontend(generate bool) {
 	if !ok {
 		addCustomTheme("default", "The default theme", "")
 	}
-
 	// Load custom favicon if configured
 	loadCustomFavicon()
 }
 
-func setupVideoPreview() {
+func setupMedia() {
 	// If VideoPreview is not initialized, initialize with all types enabled
 	if Config.Integrations.Media.Convert.VideoPreview == nil {
 		Config.Integrations.Media.Convert.VideoPreview = make(map[VideoPreviewType]bool)
@@ -168,14 +312,6 @@ func setupVideoPreview() {
 	}
 }
 
-func checkPathExists(realPath string) error {
-	// check path exists
-	if _, err := os.Stat(realPath); os.IsNotExist(err) {
-		return fmt.Errorf("source path %v is currently not available", realPath)
-	}
-	return nil
-}
-
 func setupSources(generate bool) {
 	if len(Config.Server.Sources) == 0 {
 		logger.Fatal("There are no `server.sources` configured. If you have `server.root` configured, please update the config and add at least one `server.sources` with a `path` configured.")
@@ -188,9 +324,9 @@ func setupSources(generate bool) {
 			if err != nil {
 				logger.Fatalf("error getting real path for source %v: %v", source.Path, err)
 			}
-			err = checkPathExists(realPath)
-			if err != nil {
-				logger.Warningf("error checking path exists: %v", err)
+			exists := utils.CheckPathExists(realPath)
+			if !exists {
+				logger.Warningf("source path %v is currently not available", realPath)
 			}
 			name := filepath.Base(realPath)
 			if name == "\\" {
@@ -494,6 +630,14 @@ func setDefaults(generate bool) Settings {
 	database := os.Getenv("FILEBROWSER_DATABASE")
 	if database == "" {
 		database = "database.db"
+	} else {
+		// check if database file exists
+		if _, err := os.Stat(database); os.IsNotExist(err) {
+			database = "database.db"
+		}
+	}
+	if _, err := os.Stat(database); os.IsNotExist(err) {
+		logger.Warning("database file could not be found. If this is unexpected, the default path is `./database.db`, but it can be configured in the config file under `server.database`.")
 	}
 	s := Settings{
 		Server: Server{
@@ -505,6 +649,7 @@ func setDefaults(generate bool) Settings {
 			NameToSource:       map[string]*Source{},
 			MaxArchiveSizeGB:   50,
 			CacheDir:           "tmp",
+			CacheDirCleanup:    boolPtr(true),
 			Filesystem: Filesystem{
 				CreateFilePermission:      "644",
 				CreateDirectoryPermission: "755",
@@ -526,21 +671,32 @@ func setDefaults(generate bool) Settings {
 		},
 
 		UserDefaults: UserDefaults{
-			DisableOnlyOfficeExt: ".md .txt .pdf",
+			DisableOnlyOfficeExt: ".md .txt .pdf .html .xml",
 			StickySidebar:        true,
 			LockPassword:         false,
 			ShowHidden:           false,
-			DarkMode:             true,
+			DarkMode:             boolPtr(true),
 			DisableSettings:      false,
 			ViewMode:             "normal",
 			Locale:               "en",
 			GallerySize:          3,
 			ThemeColor:           "var(--blue)",
-			Permissions: users.Permissions{
-				Modify: false,
-				Share:  false,
-				Admin:  false,
-				Api:    false,
+			Permissions: UserDefaultsPermissions{
+				Modify:   false,
+				Share:    false,
+				Admin:    false,
+				Api:      false,
+				Download: boolPtr(true), // defaults to true
+			},
+			Preview: UserDefaultsPreview{
+				HighQuality:        boolPtr(true),
+				Image:              boolPtr(true),
+				Video:              boolPtr(true),
+				MotionVideoPreview: boolPtr(true),
+				Office:             boolPtr(true),
+				PopUp:              boolPtr(true),
+				AutoplayMedia:      boolPtr(true),
+				Folder:             boolPtr(true),
 			},
 			FileLoading: users.FileLoading{
 				MaxConcurrent: 10,
@@ -562,164 +718,106 @@ func setDefaults(generate bool) Settings {
 	return s
 }
 
-func ConvertToBackendScopes(scopes []users.SourceScope) ([]users.SourceScope, error) {
-	if len(scopes) == 0 {
-		return Config.UserDefaults.DefaultScopes, nil
+// validateCustomImage validates a custom image file path and returns the absolute path or error
+func validateCustomImage(configPath, imageName string, maxSize int64, allowedFormats []string) (absolutePath string, err error) {
+	// Get absolute path
+	absolutePath, err = filepath.Abs(configPath)
+	if err != nil {
+		return "", fmt.Errorf("could not resolve path: %w", err)
 	}
-	newScopes := []users.SourceScope{}
-	for _, scope := range scopes {
 
-		// first check if its already a path name and keep it
-		source, ok := Config.Server.SourceMap[scope.Name]
-		if ok {
-			if scope.Scope == "" {
-				scope.Scope = source.Config.DefaultUserScope
-			}
-			if !strings.HasPrefix(scope.Scope, "/") {
-				scope.Scope = "/" + scope.Scope
-			}
-			if scope.Scope != "/" && strings.HasSuffix(scope.Scope, "/") {
-				scope.Scope = strings.TrimSuffix(scope.Scope, "/")
-			}
-			newScopes = append(newScopes, users.SourceScope{
-				Name:  source.Path, // backend name is path
-				Scope: scope.Scope,
-			})
-			continue
-		}
-
-		// check if its the name of a source and convert it to a path
-		source, ok = Config.Server.NameToSource[scope.Name]
-		if !ok {
-			// source might no longer be configured
-			continue
-		}
-		if scope.Scope == "" {
-			scope.Scope = source.Config.DefaultUserScope
-		}
-		if !strings.HasPrefix(scope.Scope, "/") {
-			scope.Scope = "/" + scope.Scope
-		}
-		if scope.Scope != "/" && strings.HasSuffix(scope.Scope, "/") {
-			scope.Scope = strings.TrimSuffix(scope.Scope, "/")
-		}
-		newScopes = append(newScopes, users.SourceScope{
-			Name:  source.Path, // backend name is path
-			Scope: scope.Scope,
-		})
+	// Check if file exists
+	stat, err := os.Stat(absolutePath)
+	if err != nil {
+		return "", fmt.Errorf("could not access file: %w", err)
 	}
-	return newScopes, nil
-}
 
-func ConvertToFrontendScopes(scopes []users.SourceScope) []users.SourceScope {
-	newScopes := []users.SourceScope{}
-	for _, scope := range scopes {
-		if source, ok := Config.Server.SourceMap[scope.Name]; ok {
-			// Replace scope.Name with source.Path while keeping the same Scope value
-			newScopes = append(newScopes, users.SourceScope{
-				Name:  source.Name,
-				Scope: scope.Scope,
-			})
+	// Check file size
+	if stat.Size() > maxSize {
+		return "", fmt.Errorf("file too large (%d bytes), maximum allowed is %d bytes", stat.Size(), maxSize)
+	}
+
+	// Validate file format
+	ext := strings.ToLower(filepath.Ext(absolutePath))
+	validFormat := false
+	for _, format := range allowedFormats {
+		if ext == format {
+			validFormat = true
+			break
 		}
 	}
-	return newScopes
-}
-
-func HasSourceByPath(scopes []users.SourceScope, sourcePath string) bool {
-	for _, scope := range scopes {
-		if scope.Name == sourcePath {
-			return true
-		}
+	if !validFormat {
+		return "", fmt.Errorf("unsupported format '%s', supported formats: %v", ext, allowedFormats)
 	}
-	return false
-}
 
-func GetScopeFromSourceName(scopes []users.SourceScope, sourceName string) (string, error) {
-	source, ok := Config.Server.NameToSource[sourceName]
-	if !ok {
-		logger.Debug("Could not get scope from source name: ", sourceName)
-		return "", fmt.Errorf("source with name not found %v", sourceName)
-	}
-	for _, scope := range scopes {
-		if scope.Name == source.Path {
-			return scope.Scope, nil
-		}
-	}
-	logger.Debugf("scope not found for source %v", sourceName)
-	return "", fmt.Errorf("scope not found for source %v", sourceName)
-}
-
-func GetScopeFromSourcePath(scopes []users.SourceScope, sourcePath string) (string, error) {
-	for _, scope := range scopes {
-		if scope.Name == sourcePath {
-			return scope.Scope, nil
-		}
-	}
-	return "", fmt.Errorf("scope not found for source %v", sourcePath)
-}
-
-// assumes backend style scopes
-func GetSources(u *users.User) []string {
-	sources := []string{}
-
-	// preserves order of sources
-	for _, source := range Config.Server.Sources {
-		_, err := GetScopeFromSourcePath(u.Scopes, source.Path)
-		if err != nil {
-			logger.Warningf("could not get scope for source %v: %v", source.Path, err)
-			continue
-		}
-		sources = append(sources, source.Name)
-	}
-	return sources
+	return absolutePath, nil
 }
 
 func loadCustomFavicon() {
+	const imageName = "favicon"
+	const maxSize = 1024 * 1024 // 1MB
+	allowedFormats := []string{".ico", ".png", ".svg"}
+
+	// Set default embedded favicon path
+	Env.FaviconEmbeddedPath = "img/icons/favicon.svg"
+
 	// Check if a custom favicon path is configured
 	if Config.Frontend.Favicon == "" {
-		logger.Debug("No custom favicon configured, using default")
+		Env.FaviconPath = Env.FaviconEmbeddedPath
+		Env.FaviconIsCustom = false
 		return
 	}
 
-	// Get absolute path for the favicon
-	faviconPath, err := filepath.Abs(Config.Frontend.Favicon)
+	// Validate custom favicon
+	validatedPath, err := validateCustomImage(Config.Frontend.Favicon, imageName, maxSize, allowedFormats)
 	if err != nil {
-		logger.Warningf("Could not resolve favicon path '%v': %v", Config.Frontend.Favicon, err)
-		Config.Frontend.Favicon = "" // Unset invalid path
+		logger.Warningf("Custom favicon validation failed: %v, using default", err)
+		Config.Frontend.Favicon = ""
+		Env.FaviconPath = Env.FaviconEmbeddedPath
+		Env.FaviconIsCustom = false
 		return
 	}
 
-	// Check if the favicon file exists and get info
-	stat, err := os.Stat(faviconPath)
+	// Update to validated path and mark as custom
+	Config.Frontend.Favicon = validatedPath
+	Env.FaviconPath = validatedPath
+	Env.FaviconIsCustom = true
+	logger.Infof("Using custom favicon: %s", Env.FaviconPath)
+}
+
+func loadLoginIcon() {
+	const imageName = "login icon"
+	const maxSize = 1024 * 1024 // 1MB
+	allowedFormats := []string{".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico"}
+
+	// Set default embedded icon path based on dark mode preference
+	isDarkMode := Config.UserDefaults.DarkMode != nil && *Config.UserDefaults.DarkMode
+	if isDarkMode {
+		Env.LoginIconEmbeddedPath = "img/icons/favicon.svg" // Dark mode: dark background
+	} else {
+		Env.LoginIconEmbeddedPath = "img/icons/favicon-light.svg" // Light mode: light background
+	}
+
+	// Check if a custom login icon path is configured
+	if Config.Frontend.LoginIcon == "" {
+		Env.LoginIconPath = Env.LoginIconEmbeddedPath
+		Env.LoginIconIsCustom = false
+		return
+	}
+
+	// Validate custom login icon
+	validatedPath, err := validateCustomImage(Config.Frontend.LoginIcon, imageName, maxSize, allowedFormats)
 	if err != nil {
-		logger.Warningf("Could not access custom favicon file '%v': %v", faviconPath, err)
-		Config.Frontend.Favicon = "" // Unset invalid path
+		logger.Warningf("Custom login icon validation failed: %v, using default", err)
+		Env.LoginIconPath = Env.LoginIconEmbeddedPath
+		Env.LoginIconIsCustom = false
 		return
 	}
 
-	// Check file size (limit to 1MB for security)
-	const maxFaviconSize = 1024 * 1024 // 1MB
-	if stat.Size() > maxFaviconSize {
-		logger.Warningf("Favicon file '%v' is too large (%d bytes), maximum allowed is %d bytes", faviconPath, stat.Size(), maxFaviconSize)
-		Config.Frontend.Favicon = "" // Unset invalid path
-		return
-	}
-
-	// Validate file format based on extension
-	ext := strings.ToLower(filepath.Ext(faviconPath))
-	switch ext {
-	case ".ico", ".png", ".svg":
-		// Valid favicon formats
-	default:
-		logger.Warningf("Unsupported favicon format '%v', supported formats: .ico, .png, .svg", ext)
-		Config.Frontend.Favicon = "" // Unset invalid path
-		return
-	}
-
-	// Update to absolute path and mark as valid
-	Config.Frontend.Favicon = faviconPath
-
-	logger.Infof("Successfully validated custom favicon at '%v' (%d bytes, %s)", faviconPath, stat.Size(), ext)
+	// Update to validated path and mark as custom
+	Env.LoginIconPath = validatedPath
+	Env.LoginIconIsCustom = true
+	logger.Infof("Using custom login icon: %s", Env.LoginIconPath)
 }
 
 // setConditionalsMap builds optimized map structures from conditional rules for O(1) lookups
@@ -771,6 +869,18 @@ func setConditionals(config *Source) {
 		if rule.IncludeRootItem != "" {
 			resolved.IncludeRootItems[rule.IncludeRootItem] = struct{}{}
 		}
+		if rule.FileNames != "" {
+			resolved.FileNames[rule.FileNames] = rule
+		}
+		if rule.FolderNames != "" {
+			resolved.FolderNames[rule.FolderNames] = rule
+		}
+		if rule.FileName != "" {
+			resolved.FileNames[rule.FileName] = rule
+		}
+		if rule.FolderName != "" {
+			resolved.FolderNames[rule.FolderName] = rule
+		}
 	}
 	config.Config.ResolvedConditionals = resolved
 }
@@ -816,6 +926,8 @@ func modifyExcludeInclude(config *Source) {
 		// normalize names
 		config.Config.Conditionals.ItemRules[i].FileNames = normalizeName(rule.FileNames)
 		config.Config.Conditionals.ItemRules[i].FolderNames = normalizeName(rule.FolderNames)
+		config.Config.Conditionals.ItemRules[i].FileName = normalizeName(rule.FileName)
+		config.Config.Conditionals.ItemRules[i].FolderName = normalizeName(rule.FolderName)
 	}
 
 }
